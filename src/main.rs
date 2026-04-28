@@ -1,5 +1,3 @@
-use bevy::prelude::*;
-
 fn main() {
-    App::new().add_plugins(DefaultPlugins).run();
+    bevy_ta::app::run();
 }
