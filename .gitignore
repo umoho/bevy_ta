@@ -1,0 +1,5 @@
+/target
+/assets/private/
+/docs/private/
+.DS_Store
+/docs/

@@ -1,0 +1,16 @@
+[package]
+name = "bevy_ta"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.18.1", features = ["debug", "jpeg"] }
+bevy_egui = { version = "0.39.1", optional = true }
+bevy-inspector-egui = { version = "0.36.0", optional = true }
+ron = "0.10.1"
+serde = { version = "1.0.228", features = ["derive"] }
+
+[features]
+default = ["dev_ui"]
+dev_ui = ["dep:bevy_egui"]
+inspector = ["dev_ui", "dep:bevy-inspector-egui"]
