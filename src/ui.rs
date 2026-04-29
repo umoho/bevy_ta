@@ -1,6 +1,9 @@
 #![cfg(feature = "dev_ui")]
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use bevy::prelude::*;
 use bevy_egui::{
@@ -8,10 +11,17 @@ use bevy_egui::{
 };
 use bevy_material_preview::{MaterialPreviewAppExt, MaterialPreviewPlugin, MaterialPreviewSession};
 
-use crate::npr::toon::{
-    RampData, RampInterpolation, RampStop, ToonMaterial, ToonMaterialBindingSource,
-    ToonMaterialTarget, ToonModelBindingsFile, ToonParams, default_ramp_data, rebuild_ramp_texture,
-    toon_model_data_path,
+use crate::npr::{
+    profile::{
+        CharacterRenderProfile, ModelBinding, PROFILE_VERSION, RenderPartBinding,
+        RenderPartResources, SceneInteractionParams, ShaderProfileRegistry, SurfaceProfileParams,
+        SurfaceRegionMaskMode, SurfaceRegionParams, character_render_profile_path,
+        ron_value_from_serializable, ron_value_into,
+    },
+    toon::{
+        RampData, RampInterpolation, RampStop, ToonMaterial, ToonMaterialBindingSource,
+        ToonMaterialTarget, ToonParams, default_ramp_data, rebuild_ramp_texture,
+    },
 };
 
 pub struct MaterialEditorPlugin;
@@ -60,6 +70,7 @@ struct MaterialSourceInfo {
     source_nodes: Vec<MaterialSourceNode>,
     scene_asset_path: Option<String>,
     binding_file_path: Option<PathBuf>,
+    shader_key: String,
 }
 
 #[derive(Clone)]
@@ -85,6 +96,13 @@ struct RampEditorState {
 #[derive(Default)]
 struct MaterialPersistenceState {
     status_message: Option<String>,
+}
+
+#[derive(Default)]
+struct SurfaceProfileEditorState {
+    selected_entity: Option<Entity>,
+    resources: RenderPartResources,
+    params: SurfaceProfileParams,
 }
 
 fn setup_chinese_fonts(mut contexts: EguiContexts) {
@@ -123,6 +141,7 @@ fn spawn_material_icon_previews(
             Vec<MaterialSourceNode>,
             Option<String>,
             Option<PathBuf>,
+            String,
         ),
     >::new();
 
@@ -146,7 +165,12 @@ fn spawn_material_icon_previews(
             .or_else(|| name.map(ToString::to_string))
             .unwrap_or_else(|| format!("节点 {}", mesh_entity.index()));
         let scene_asset_path = binding_source.and_then(|source| source.scene_asset_path.clone());
-        let binding_file_path = scene_asset_path.as_deref().map(toon_model_data_path);
+        let shader_key = binding_source
+            .map(|source| source.shader_key.clone())
+            .unwrap_or_else(|| "surface".to_string());
+        let binding_file_path = scene_asset_path
+            .as_deref()
+            .map(character_render_profile_path);
 
         preview_sources
             .entry(material_id)
@@ -156,6 +180,7 @@ fn spawn_material_icon_previews(
                     Vec::new(),
                     scene_asset_path.clone(),
                     binding_file_path.clone(),
+                    shader_key.clone(),
                 )
             })
             .1
@@ -166,8 +191,10 @@ fn spawn_material_icon_previews(
         existing_materials.push(material_id);
     }
 
-    for (material_id, (material_handle, mut source_nodes, scene_asset_path, binding_file_path)) in
-        preview_sources
+    for (
+        material_id,
+        (material_handle, mut source_nodes, scene_asset_path, binding_file_path, shader_key),
+    ) in preview_sources
     {
         let Some(material) = materials.get(material_id) else {
             continue;
@@ -190,6 +217,7 @@ fn spawn_material_icon_previews(
                 source_nodes,
                 scene_asset_path,
                 binding_file_path,
+                shader_key,
             },
         ));
     }
@@ -362,6 +390,8 @@ fn show_material_property_panel(
     ramp_textures: Query<&RampTextureId>,
     mut materials: ResMut<Assets<ToonMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    profile_registry: Res<ShaderProfileRegistry>,
+    mut surface_profile_editor_state: Local<SurfaceProfileEditorState>,
     mut ramp_editor_state: Local<RampEditorState>,
     mut persistence_state: Local<MaterialPersistenceState>,
 ) {
@@ -385,6 +415,12 @@ fn show_material_property_panel(
         .get(selected_entity)
         .ok()
         .map(|texture| texture.0);
+    sync_surface_profile_editor_state(
+        selected_entity,
+        source_info,
+        material,
+        &mut surface_profile_editor_state,
+    );
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -406,6 +442,8 @@ fn show_material_property_panel(
                         &mut images,
                         material,
                         source_info,
+                        &profile_registry,
+                        &mut surface_profile_editor_state,
                         &mut persistence_state,
                     );
                     ui.add_space(10.0);
@@ -477,6 +515,7 @@ fn show_selected_material_preview(
         } else {
             ui.small("当前节点没有模型绑定文件");
         }
+        ui.small(format!("着色器类型 {}", source_info.shader_key));
         ui.add_space(6.0);
     });
 }
@@ -500,6 +539,8 @@ fn show_model_binding_editor(
     images: &mut Assets<Image>,
     material: &mut ToonMaterial,
     source_info: &MaterialSourceInfo,
+    profile_registry: &ShaderProfileRegistry,
+    surface_profile_editor_state: &mut SurfaceProfileEditorState,
     persistence_state: &mut MaterialPersistenceState,
 ) {
     ui.group(|ui| {
@@ -511,40 +552,26 @@ fn show_model_binding_editor(
             ui.small(format!("绑定文件 {}", path.display()));
             ui.horizontal(|ui| {
                 if ui.button("保存到模型").clicked() {
-                    let mut bindings =
-                        ToonModelBindingsFile::load_from_path(path).unwrap_or_else(|_| {
-                            ToonModelBindingsFile {
-                                scene_asset_path: source_info.scene_asset_path.clone(),
-                                ..Default::default()
-                            }
-                        });
-                    bindings.scene_asset_path = source_info.scene_asset_path.clone();
-                    for source_node in &source_info.source_nodes {
-                        bindings.upsert_material(&source_node.node_name, material);
-                    }
-                    persistence_state.status_message = Some(match bindings.save_to_path(path) {
-                        Ok(()) => format!("已保存 {}", path.display()),
-                        Err(err) => err,
-                    });
+                    persistence_state.status_message = Some(save_material_profile(
+                        path,
+                        source_info,
+                        profile_registry,
+                        material,
+                        surface_profile_editor_state,
+                    ));
                 }
 
                 if ui.button("从模型恢复").clicked() {
                     persistence_state.status_message = Some(
-                        match ToonModelBindingsFile::load_from_path(path).and_then(|bindings| {
-                            source_info
-                                .source_nodes
-                                .iter()
-                                .find_map(|source_node| {
-                                    bindings.find_material(&source_node.node_name).cloned()
-                                })
-                                .ok_or_else(|| "当前材质节点没有保存过绑定参数".to_string())
-                        }) {
-                            Ok(material_data) => {
-                                let use_texture = material.params.use_base_color_texture;
-                                material_data.apply_to_material(material, images);
-                                material.params.use_base_color_texture = use_texture;
-                                format!("已恢复 {}", path.display())
-                            }
+                        match load_material_profile(
+                            path,
+                            source_info,
+                            profile_registry,
+                            material,
+                            images,
+                            surface_profile_editor_state,
+                        ) {
+                            Ok(()) => format!("已恢复 {}", path.display()),
                             Err(err) => err,
                         },
                     );
@@ -570,6 +597,8 @@ fn show_model_binding_editor(
             ui.small(status_message);
         }
     });
+
+    show_surface_profile_editor(ui, surface_profile_editor_state);
 }
 
 fn show_ramp_editor(
@@ -827,6 +856,230 @@ fn show_ramp_stop_track(
     }
 
     changed
+}
+
+fn sync_surface_profile_editor_state(
+    selected_entity: Entity,
+    source_info: &MaterialSourceInfo,
+    material: &ToonMaterial,
+    state: &mut SurfaceProfileEditorState,
+) {
+    if state.selected_entity == Some(selected_entity) {
+        return;
+    }
+
+    state.selected_entity = Some(selected_entity);
+    state.resources = RenderPartResources::default();
+    state.params = SurfaceProfileParams::from_material(material);
+
+    let Some(scene_asset_path) = &source_info.scene_asset_path else {
+        return;
+    };
+    let Ok(profile) = CharacterRenderProfile::load_for_scene_asset_path(scene_asset_path) else {
+        return;
+    };
+    let Some(part) = source_info
+        .source_nodes
+        .iter()
+        .find_map(|source_node| profile.find_part(&source_node.node_name))
+    else {
+        return;
+    };
+
+    state.resources = part.resources.clone();
+    if let Ok(params) = ron_value_into::<SurfaceProfileParams>(part.params.clone()) {
+        state.params = params;
+    }
+}
+
+fn save_material_profile(
+    path: &Path,
+    source_info: &MaterialSourceInfo,
+    profile_registry: &ShaderProfileRegistry,
+    material: &ToonMaterial,
+    surface_profile_editor_state: &SurfaceProfileEditorState,
+) -> String {
+    if profile_registry.get(&source_info.shader_key).is_none() {
+        return format!("未注册的着色器类型: {}", source_info.shader_key);
+    }
+    let mut surface_params = surface_profile_editor_state.params.clone();
+    surface_params.toon = crate::npr::toon::ToonMaterialData::from_material(material);
+    let params = match ron_value_from_serializable(&surface_params) {
+        Ok(params) => params,
+        Err(err) => return err,
+    };
+    let mut profile = source_info
+        .scene_asset_path
+        .as_deref()
+        .and_then(|scene_asset_path| {
+            CharacterRenderProfile::load_for_scene_asset_path(scene_asset_path).ok()
+        })
+        .or_else(|| CharacterRenderProfile::load_from_path(path).ok())
+        .unwrap_or_else(|| CharacterRenderProfile {
+            version: PROFILE_VERSION,
+            model_binding: ModelBinding {
+                scene_asset_path: source_info.scene_asset_path.clone(),
+            },
+            shared: Default::default(),
+            parts: Vec::new(),
+        });
+    profile.model_binding.scene_asset_path = source_info.scene_asset_path.clone();
+
+    for source_node in &source_info.source_nodes {
+        profile.upsert_part(RenderPartBinding {
+            binding_key: source_node.node_name.clone(),
+            shader_key: source_info.shader_key.clone(),
+            resources: normalize_render_part_resources(
+                surface_profile_editor_state.resources.clone(),
+            ),
+            params: params.clone(),
+        });
+    }
+
+    match profile.save_to_path(path) {
+        Ok(()) => format!("已保存 {}", path.display()),
+        Err(err) => err,
+    }
+}
+
+fn load_material_profile(
+    path: &Path,
+    source_info: &MaterialSourceInfo,
+    profile_registry: &ShaderProfileRegistry,
+    material: &mut ToonMaterial,
+    images: &mut Assets<Image>,
+    surface_profile_editor_state: &mut SurfaceProfileEditorState,
+) -> Result<(), String> {
+    let profile = if let Some(scene_asset_path) = &source_info.scene_asset_path {
+        CharacterRenderProfile::load_for_scene_asset_path(scene_asset_path)?
+    } else {
+        CharacterRenderProfile::load_from_path(path)?
+    };
+    let Some(part) = source_info
+        .source_nodes
+        .iter()
+        .find_map(|source_node| profile.find_part(&source_node.node_name))
+    else {
+        return Err("当前材质节点没有保存过绑定参数".to_string());
+    };
+    let Some(handler) = profile_registry.get(&part.shader_key) else {
+        return Err(format!("未注册的着色器类型: {}", part.shader_key));
+    };
+    handler.apply_to_toon_material(&part.params, material, images)?;
+    surface_profile_editor_state.resources = part.resources.clone();
+    surface_profile_editor_state.params =
+        ron_value_into::<SurfaceProfileParams>(part.params.clone())?;
+    Ok(())
+}
+
+fn show_surface_profile_editor(ui: &mut egui::Ui, state: &mut SurfaceProfileEditorState) {
+    ui.group(|ui| {
+        ui.label(egui::RichText::new("Surface Profile").strong());
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label("分区 Mask");
+            ui.selectable_value(
+                &mut state.params.region_mask_mode,
+                SurfaceRegionMaskMode::None,
+                "无",
+            );
+            ui.selectable_value(
+                &mut state.params.region_mask_mode,
+                SurfaceRegionMaskMode::ChannelsRgba,
+                "RGBA 通道",
+            );
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("法线贴图");
+            ui.text_edit_singleline(
+                state
+                    .resources
+                    .normal_texture
+                    .get_or_insert_with(String::new),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Region Mask");
+            ui.text_edit_singleline(
+                state
+                    .resources
+                    .region_mask_texture
+                    .get_or_insert_with(String::new),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("光照控制");
+            ui.text_edit_singleline(
+                state
+                    .resources
+                    .lighting_control_texture
+                    .get_or_insert_with(String::new),
+            );
+        });
+
+        show_scene_interaction_editor(ui, &mut state.params.scene_interaction);
+        show_surface_region_editor(ui, "布料", &mut state.params.regions.fabric);
+        show_surface_region_editor(ui, "硬表面", &mut state.params.regions.hard_surface);
+        show_surface_region_editor(ui, "金属", &mut state.params.regions.metal);
+        show_surface_region_editor(ui, "皮革", &mut state.params.regions.leather);
+    });
+}
+
+fn normalize_render_part_resources(mut resources: RenderPartResources) -> RenderPartResources {
+    normalize_optional_string(&mut resources.base_color_texture);
+    normalize_optional_string(&mut resources.normal_texture);
+    normalize_optional_string(&mut resources.region_mask_texture);
+    normalize_optional_string(&mut resources.lighting_control_texture);
+    resources
+}
+
+fn normalize_optional_string(value: &mut Option<String>) {
+    if value.as_ref().is_some_and(|text| text.trim().is_empty()) {
+        *value = None;
+    }
+}
+
+fn show_scene_interaction_editor(ui: &mut egui::Ui, params: &mut SceneInteractionParams) {
+    show_param_group(
+        ui,
+        "surface_scene_interaction_group",
+        "环境交互",
+        None,
+        false,
+        |ui| {
+            ui.add(egui::Slider::new(&mut params.direct_light_weight, 0.0..=2.0).text("主光权重"));
+            ui.add(egui::Slider::new(&mut params.env_light_weight, 0.0..=2.0).text("环境光权重"));
+            ui.add(
+                egui::Slider::new(&mut params.shadow_receive_weight, 0.0..=1.0).text("阴影接收"),
+            );
+            ui.add(egui::Slider::new(&mut params.ambient_floor, 0.0..=1.0).text("暗部底亮"));
+            ui.add(
+                egui::Slider::new(&mut params.light_color_influence, 0.0..=1.0).text("灯色影响"),
+            );
+        },
+    );
+}
+
+fn show_surface_region_editor(
+    ui: &mut egui::Ui,
+    title: &'static str,
+    params: &mut SurfaceRegionParams,
+) {
+    let id_source = match title {
+        "布料" => "surface_fabric_region_group",
+        "硬表面" => "surface_hard_surface_region_group",
+        "金属" => "surface_metal_region_group",
+        "皮革" => "surface_leather_region_group",
+        _ => "surface_region_group",
+    };
+    show_param_group(ui, id_source, title, None, false, |ui| {
+        ui.add(egui::Slider::new(&mut params.specular_boost, 0.0..=2.0).text("高光增强"));
+        ui.add(egui::Slider::new(&mut params.rim_boost, 0.0..=2.0).text("边缘光增强"));
+        ui.add(egui::Slider::new(&mut params.shadow_bias, -0.5..=0.5).text("阴影偏移"));
+        ui.add(egui::Slider::new(&mut params.detail_normal_weight, 0.0..=1.0).text("细节法线"));
+    });
 }
 
 fn normalize_ramp_data(ramp_data: &mut RampData) {
