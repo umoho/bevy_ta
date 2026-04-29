@@ -1135,6 +1135,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_material_preview"
+version = "0.2.0"
+dependencies = [
+ "bevy",
+]
+
+[[package]]
 name = "bevy_math"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1537,6 +1544,8 @@ dependencies = [
  "bevy",
  "bevy-inspector-egui",
  "bevy_egui",
+ "bevy_material_preview",
+ "egui-chinese-font",
  "ron 0.10.1",
  "serde",
 ]
@@ -2433,6 +2442,13 @@ dependencies = [
  "profiling",
  "smallvec",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "egui-chinese-font"
+version = "0.2.0"
+dependencies = [
+ "egui",
 ]
 
 [[package]]

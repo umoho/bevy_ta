@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -31,6 +34,15 @@ impl Plugin for ToonMaterialPlugin {
 
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct ToonMaterialTarget;
+
+#[derive(Component, Debug, Clone)]
+pub struct ToonModelBindingAssetPath(pub String);
+
+#[derive(Component, Debug, Clone)]
+pub struct ToonMaterialBindingSource {
+    pub scene_asset_path: Option<String>,
+    pub node_name: String,
+}
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 #[bind_group_data(ToonMaterialKey)]
@@ -210,6 +222,81 @@ impl Default for ToonMaterialData {
             ramp: RampDataFile::default(),
         }
     }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct ToonModelBindingsFile {
+    pub scene_asset_path: Option<String>,
+    pub entries: Vec<ToonModelBindingEntry>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ToonModelBindingEntry {
+    pub node_name: String,
+    pub material: ToonMaterialData,
+}
+
+impl ToonModelBindingsFile {
+    pub fn load_from_path(path: &Path) -> Result<Self, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        ron::from_str(&content).map_err(|err| format!("failed to parse {}: {err}", path.display()))
+    }
+
+    pub fn save_to_path(&self, path: &Path) -> Result<(), String> {
+        let Some(parent) = path.parent() else {
+            return Err(format!("invalid path: {}", path.display()));
+        };
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+        let ron = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+            .map_err(|err| format!("failed to serialize toon model bindings: {err}"))?;
+        fs::write(path, ron).map_err(|err| format!("failed to write {}: {err}", path.display()))
+    }
+
+    pub fn load_for_scene_asset_path(scene_asset_path: &str) -> Result<Self, String> {
+        Self::load_from_path(&toon_model_data_path(scene_asset_path))
+    }
+
+    pub fn upsert_material(&mut self, node_name: &str, material: &ToonMaterial) {
+        let material_data = ToonMaterialData::from_material(material);
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.node_name == node_name)
+        {
+            entry.material = material_data;
+        } else {
+            self.entries.push(ToonModelBindingEntry {
+                node_name: node_name.to_string(),
+                material: material_data,
+            });
+            self.entries
+                .sort_by(|left, right| left.node_name.cmp(&right.node_name));
+        }
+    }
+
+    pub fn find_material(&self, node_name: &str) -> Option<&ToonMaterialData> {
+        self.entries
+            .iter()
+            .find(|entry| entry.node_name == node_name)
+            .map(|entry| &entry.material)
+    }
+}
+
+pub fn toon_model_data_path(scene_asset_path: &str) -> PathBuf {
+    let source_path = scene_asset_path
+        .split('#')
+        .next()
+        .unwrap_or(scene_asset_path);
+    let source_path = Path::new(source_path);
+    let file_stem = source_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("character");
+
+    Path::new("assets").join(source_path.with_file_name(format!("{file_stem}.toon-model.ron")))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -492,16 +579,23 @@ fn sample_ramp_color(ramp_data: &RampData, position: f32) -> LinearRgba {
 fn convert_scene_materials_to_toon(
     scene_ready: On<SceneInstanceReady>,
     mut commands: Commands,
-    toon_targets: Query<(), With<ToonMaterialTarget>>,
+    toon_targets: Query<Option<&ToonModelBindingAssetPath>, With<ToonMaterialTarget>>,
     scene_nodes: Query<&Children>,
+    node_names: Query<Option<&Name>>,
     mesh_materials: Query<&StandardMeshMaterial>,
     standard_materials: Res<Assets<StandardMaterial>>,
     mut toon_materials: ResMut<Assets<ToonMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    if !toon_targets.contains(scene_ready.entity) {
+    let Ok(binding_asset_path) = toon_targets.get(scene_ready.entity) else {
         return;
-    }
+    };
+    let binding_scene_asset_path = binding_asset_path.map(|path| path.0.clone());
+    let model_bindings = binding_scene_asset_path
+        .as_deref()
+        .and_then(|scene_asset_path| {
+            ToonModelBindingsFile::load_for_scene_asset_path(scene_asset_path).ok()
+        });
 
     // GLTF 会先生成 StandardMaterial；这里仅提取基础颜色和贴图，再换成独立的 toon 材质。
     for descendant in scene_nodes.iter_descendants(scene_ready.entity) {
@@ -511,12 +605,29 @@ fn convert_scene_materials_to_toon(
         let Some(source_material) = standard_materials.get(mesh_material) else {
             continue;
         };
+        let node_name = node_names
+            .get(descendant)
+            .ok()
+            .and_then(|name| name.map(ToString::to_string))
+            .unwrap_or_else(|| format!("节点 {}", descendant.index()));
+        let mut toon_material = ToonMaterial::from_standard_material(source_material, &mut images);
+        if let Some(binding) = model_bindings
+            .as_ref()
+            .and_then(|bindings| bindings.find_material(&node_name))
+            .cloned()
+        {
+            let use_base_color_texture = toon_material.params.use_base_color_texture;
+            binding.apply_to_material(&mut toon_material, &mut images);
+            toon_material.params.use_base_color_texture = use_base_color_texture;
+        }
 
         commands
             .entity(descendant)
             .remove::<StandardMeshMaterial>()
-            .insert(MeshMaterial3d(toon_materials.add(
-                ToonMaterial::from_standard_material(source_material, &mut images),
-            )));
+            .insert(MeshMaterial3d(toon_materials.add(toon_material)))
+            .insert(ToonMaterialBindingSource {
+                scene_asset_path: binding_scene_asset_path.clone(),
+                node_name,
+            });
     }
 }

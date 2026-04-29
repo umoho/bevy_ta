@@ -4,10 +4,12 @@ use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     prelude::*,
 };
+#[cfg(feature = "dev_ui")]
+use bevy_egui::input::EguiWantsInput;
 
 use crate::npr::{
     NprPlugin,
-    toon::{ToonMaterial, ToonMaterialTarget},
+    toon::{ToonMaterial, ToonMaterialTarget, ToonModelBindingAssetPath},
 };
 
 const PRIVATE_SCENE_ENV: &str = "BEVY_TA_CHARACTER_SCENE";
@@ -15,8 +17,8 @@ const PRIVATE_SCENE_SCALE_ENV: &str = "BEVY_TA_CHARACTER_SCALE";
 const DEFAULT_PRIVATE_SCENE_SCALE: f32 = 5.0;
 
 pub fn run() {
-    App::new()
-        .init_resource::<OrbitCameraSettings>()
+    let mut app = App::new();
+    app.init_resource::<OrbitCameraSettings>()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Bevy TA NPR".into(),
@@ -27,8 +29,12 @@ pub fn run() {
         }))
         .add_plugins(NprPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, (orbit_camera, toggle_outline))
-        .run();
+        .add_systems(Update, (orbit_camera, toggle_outline));
+
+    #[cfg(feature = "dev_ui")]
+    app.add_plugins(crate::ui::MaterialEditorPlugin);
+
+    app.run();
 }
 
 fn setup(
@@ -36,6 +42,7 @@ fn setup(
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut toon_materials: ResMut<Assets<ToonMaterial>>,
+    mut standard_materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     commands.insert_resource(GlobalAmbientLight {
@@ -55,11 +62,10 @@ fn setup(
 
     commands.spawn((
         Mesh3d(meshes.add(Circle::new(3.5))),
-        MeshMaterial3d(toon_materials.add({
-            let mut material = ToonMaterial::new(&mut images, LinearRgba::rgb(0.78, 0.78, 0.74));
-            material.params.outline_enabled = 0;
-            material.params.shadow_strength = 0.25;
-            material
+        MeshMaterial3d(standard_materials.add(StandardMaterial {
+            base_color: Color::srgb(0.78, 0.78, 0.74),
+            perceptual_roughness: 0.85,
+            ..Default::default()
         })),
         Transform::from_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
     ));
@@ -67,9 +73,10 @@ fn setup(
     if let Ok(scene_path) = env::var(PRIVATE_SCENE_ENV) {
         let scene_scale = private_scene_scale();
         commands.spawn((
-            SceneRoot(asset_server.load::<Scene>(scene_path)),
+            SceneRoot(asset_server.load::<Scene>(scene_path.clone())),
             Transform::from_scale(Vec3::splat(scene_scale)),
             ToonMaterialTarget,
+            ToonModelBindingAssetPath(scene_path),
         ));
     } else {
         spawn_placeholder_character(&mut commands, &mut meshes, &mut toon_materials, &mut images);
@@ -122,6 +129,7 @@ fn spawn_placeholder_character(
             Transform::from_xyz(0.0, 0.95, 0.0),
             Visibility::Inherited,
             Name::new("toon_placeholder"),
+            ToonMaterialTarget,
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -179,6 +187,7 @@ fn orbit_camera(
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
     mouse_scroll: Res<AccumulatedMouseScroll>,
+    #[cfg(feature = "dev_ui")] egui_wants_input: Option<Res<EguiWantsInput>>,
     time: Res<Time>,
     settings: Res<OrbitCameraSettings>,
     mut cameras: Query<(&mut Transform, &mut OrbitCamera), With<Camera>>,
@@ -186,6 +195,14 @@ fn orbit_camera(
     const MIN_DISTANCE: f32 = 2.0;
     const MAX_DISTANCE: f32 = 18.0;
     const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.05;
+
+    #[cfg(feature = "dev_ui")]
+    if egui_wants_input
+        .as_ref()
+        .is_some_and(|egui_wants_input| egui_wants_input.wants_any_pointer_input())
+    {
+        return;
+    }
 
     for (mut transform, mut orbit) in &mut cameras {
         if mouse_buttons.pressed(MouseButton::Left) {
