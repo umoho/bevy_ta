@@ -33,6 +33,8 @@ pub fn run() {
 
     #[cfg(feature = "dev_ui")]
     app.add_plugins(crate::ui::MaterialEditorPlugin);
+    #[cfg(feature = "brp_tools")]
+    app.add_plugins(crate::brp_tools::BrpToolsPlugin);
 
     app.run();
 }
@@ -93,6 +95,7 @@ fn setup(
             orbit_velocity: Vec2::ZERO,
             zoom_velocity: 0.0,
         },
+        Name::new("camera_orbit"),
     ));
 }
 
