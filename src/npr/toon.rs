@@ -57,10 +57,7 @@ pub struct ToonMaterial {
     #[sampler(4)]
     pub ramp_texture: Handle<Image>,
     #[uniform(5)]
-    pub character_surface: CharacterSurfaceParams,
-    #[texture(6)]
-    #[sampler(7)]
-    pub region_mask_texture: Option<Handle<Image>>,
+    pub character_material: CharacterMaterialParams,
     pub ramp_data: RampData,
     pub alpha_mode: AlphaMode,
     pub cull_mode: Option<Face>,
@@ -76,8 +73,7 @@ impl ToonMaterial {
             },
             base_color_texture: None,
             ramp_texture: create_ramp_texture(images, &ramp_data),
-            character_surface: CharacterSurfaceParams::default(),
-            region_mask_texture: None,
+            character_material: CharacterMaterialParams::default(),
             ramp_data,
             alpha_mode: AlphaMode::Opaque,
             cull_mode: Some(Face::Back),
@@ -93,11 +89,12 @@ impl ToonMaterial {
         toon
     }
 
-    pub fn set_region_mask_texture_path(&mut self, asset_server: &AssetServer, path: Option<&str>) {
-        self.region_mask_texture = path
+    pub fn set_base_color_texture_path(&mut self, asset_server: &AssetServer, path: Option<&str>) {
+        self.base_color_texture = path
             .map(str::trim)
             .filter(|path| !path.is_empty())
             .map(|path| asset_server.load(path.to_string()));
+        self.params.use_base_color_texture = u32::from(self.base_color_texture.is_some());
     }
 
     pub fn apply_render_part_resources(
@@ -105,7 +102,9 @@ impl ToonMaterial {
         resources: &RenderPartResources,
         asset_server: &AssetServer,
     ) {
-        self.set_region_mask_texture_path(asset_server, resources.region_mask_texture.as_deref());
+        if resources.base_color_texture.is_some() {
+            self.set_base_color_texture_path(asset_server, resources.base_color_texture.as_deref());
+        }
     }
 }
 
@@ -201,24 +200,18 @@ impl Default for ToonParams {
 }
 
 #[derive(Reflect, ShaderType, Debug, Clone)]
-pub struct CharacterSurfaceParams {
-    pub fabric: Vec4,
-    pub hard_surface: Vec4,
-    pub metal: Vec4,
-    pub leather: Vec4,
+pub struct CharacterMaterialParams {
     pub scene_primary: Vec4,
-    pub scene_secondary: Vec4,
+    pub shading_primary: Vec4,
+    pub shading_secondary: Vec4,
 }
 
-impl Default for CharacterSurfaceParams {
+impl Default for CharacterMaterialParams {
     fn default() -> Self {
         Self {
-            fabric: Vec4::new(0.15, 0.12, 0.0, 0.35),
-            hard_surface: Vec4::new(0.65, 0.4, 0.05, 0.2),
-            metal: Vec4::new(1.0, 0.55, 0.08, 0.1),
-            leather: Vec4::new(0.45, 0.25, 0.03, 0.25),
             scene_primary: Vec4::new(1.0, 0.35, 0.65, 0.12),
-            scene_secondary: Vec4::new(0.35, 0.0, 0.0, 0.0),
+            shading_primary: Vec4::new(0.0, 1.0, 1.0, 0.0),
+            shading_secondary: Vec4::new(0.0, 0.0, 0.0, 0.35),
         }
     }
 }

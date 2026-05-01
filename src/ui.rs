@@ -13,11 +13,10 @@ use bevy_material_preview::{MaterialPreviewAppExt, MaterialPreviewPlugin, Materi
 
 use crate::npr::{
     profile::{
-        CHARACTER_SURFACE_SHADER_KEY, CharacterRenderProfile, CharacterSurfaceContainerProfile,
-        CharacterSurfaceRegionKind, CharacterSurfaceRegionMaskMode, CharacterSurfaceRegionParams,
-        ModelBinding, PROFILE_VERSION, RenderPartBinding, RenderPartResources,
-        SceneInteractionParams, ShaderProfileRegistry, character_render_profile_path,
-        ron_value_from_serializable, ron_value_into,
+        CHARACTER_SURFACE_SHADER_KEY, CharacterMaterialProfile, CharacterRenderProfile,
+        MaterialShadingParams, ModelBinding, PROFILE_VERSION, RenderPartBinding,
+        RenderPartResources, SceneInteractionParams, ShaderProfileRegistry,
+        character_render_profile_path, ron_value_from_serializable, ron_value_into,
     },
     toon::{
         RampData, RampDataFile, RampInterpolation, RampStop, ToonMaterial,
@@ -103,8 +102,9 @@ struct MaterialPersistenceState {
 #[derive(Default)]
 struct CharacterSurfaceContainerEditorState {
     selected_entity: Option<Entity>,
+    shader_key: String,
     resources: RenderPartResources,
-    container: CharacterSurfaceContainerProfile,
+    profile: CharacterMaterialProfile,
 }
 
 fn setup_chinese_fonts(mut contexts: EguiContexts) {
@@ -388,7 +388,7 @@ fn show_material_property_panel(
     selected: Res<SelectedToonMaterial>,
     asset_server: Res<AssetServer>,
     material_handles: Query<&MaterialHandle<ToonMaterial>>,
-    source_infos: Query<&MaterialSourceInfo>,
+    mut source_infos: Query<&mut MaterialSourceInfo>,
     property_previews: Query<&PreviewTextureId, With<PropertyPreview>>,
     ramp_textures: Query<&RampTextureId>,
     mut materials: ResMut<Assets<ToonMaterial>>,
@@ -404,7 +404,7 @@ fn show_material_property_panel(
     let Ok(material_handle) = material_handles.get(selected_entity) else {
         return;
     };
-    let Ok(source_info) = source_infos.get(selected_entity) else {
+    let Ok(mut source_info) = source_infos.get_mut(selected_entity) else {
         return;
     };
     let Some(material) = materials.get_mut(material_handle.0.id()) else {
@@ -416,7 +416,7 @@ fn show_material_property_panel(
         .map(|preview| preview.0);
     sync_character_surface_profile_editor_state(
         selected_entity,
-        source_info,
+        &source_info,
         material,
         &mut surface_profile_editor_state,
     );
@@ -428,7 +428,7 @@ fn show_material_property_panel(
         .resizable(true)
         .default_width(380.0)
         .show(ctx, |ui| {
-            show_selected_material_preview(ui, property_preview_texture, source_info);
+            show_selected_material_preview(ui, property_preview_texture, &source_info);
             egui::ScrollArea::vertical()
                 .id_salt("toon_material_property_scroll")
                 .show(ui, |ui| {
@@ -441,7 +441,7 @@ fn show_material_property_panel(
                         &asset_server,
                         &mut images,
                         material,
-                        source_info,
+                        &source_info,
                         &profile_registry,
                         &mut surface_profile_editor_state,
                         &mut persistence_state,
@@ -463,6 +463,7 @@ fn show_material_property_panel(
                     );
                 });
         });
+    source_info.shader_key = surface_profile_editor_state.shader_key.clone();
 }
 
 fn show_selected_material_preview(
@@ -611,115 +612,26 @@ fn show_character_surface_material_editor(
     state: &mut CharacterSurfaceContainerEditorState,
     selected_stop_index: &mut usize,
 ) {
-    // 共享 toon 骨架仍然是当前运行时材质的基础，但编辑入口改成容器级而不是旧的独立卡通材质区块。
-    state.container.toon = ToonMaterialData::from_material(material);
+    // 当前材质统一使用同一套 toon 骨架；不同部位通过材质实例参数拉开表现。
+    state.profile.toon = ToonMaterialData::from_material(material);
 
     ui.group(|ui| {
-        ui.label(egui::RichText::new("角色 Surface 容器").strong());
-        ui.small("容器级参数会作用于整个复合贴图；子区域材质会按 mask 通道分别覆盖。");
+        ui.label(egui::RichText::new("统一 Toon 材质").strong());
         ui.add_space(6.0);
 
         show_container_binding_resources(ui, state);
-        show_scene_interaction_editor(ui, &mut state.container.scene_interaction);
+        show_scene_interaction_editor(ui, &mut state.profile.scene_interaction);
         show_container_ramp_editor(
             ui,
-            &mut state.container.toon,
+            &mut state.profile.toon,
             ramp_texture,
             selected_stop_index,
         );
-        show_container_toon_editor(ui, &mut state.container.toon.params);
-        show_region_material_groups(ui, &mut state.container);
+        show_container_toon_editor(ui, &mut state.profile.toon.params);
+        show_material_shading_editor(ui, &mut state.profile.shading);
     });
 
     apply_character_surface_editor_state_to_material(asset_server, images, material, state);
-}
-
-fn show_ramp_editor(
-    ui: &mut egui::Ui,
-    images: &mut Assets<Image>,
-    material: &mut ToonMaterial,
-    ramp_texture: Option<egui::TextureId>,
-    selected_stop_index: &mut usize,
-) {
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("渐变纹理 (Ramp)").strong());
-        ui.add_space(5.0);
-        if let Some(ramp_texture) = ramp_texture {
-            ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                ramp_texture,
-                egui::vec2(280.0, 28.0),
-            )));
-        } else {
-            ui.add_sized(egui::vec2(280.0, 28.0), egui::Spinner::new());
-        }
-        ui.add_space(6.0);
-
-        let mut changed = show_ramp_stop_track(ui, &mut material.ramp_data, selected_stop_index);
-        *selected_stop_index =
-            (*selected_stop_index).min(material.ramp_data.stops.len().saturating_sub(1));
-
-        if let Some(stop) = material.ramp_data.stops.get_mut(*selected_stop_index) {
-            ui.horizontal(|ui| {
-                ui.label("当前位置");
-                changed |= ui
-                    .add(egui::Slider::new(&mut stop.position, 0.0..=1.0).show_value(true))
-                    .changed();
-            });
-            changed |= show_linear_rgba_editor(ui, "颜色", &mut stop.color);
-        }
-
-        ui.horizontal(|ui| {
-            if ui.button("+").clicked() {
-                material.ramp_data.stops.push(RampStop {
-                    position: 0.5,
-                    color: LinearRgba::WHITE,
-                });
-                *selected_stop_index = material.ramp_data.stops.len() - 1;
-                changed = true;
-            }
-
-            let can_remove = material.ramp_data.stops.len() > 2;
-            if ui.add_enabled(can_remove, egui::Button::new("-")).clicked() {
-                material.ramp_data.stops.remove(*selected_stop_index);
-                *selected_stop_index =
-                    (*selected_stop_index).min(material.ramp_data.stops.len().saturating_sub(1));
-                changed = true;
-            }
-
-            if ui.button("重置默认").clicked() {
-                material.ramp_data = default_ramp_data();
-                *selected_stop_index = 0;
-                changed = true;
-            }
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("插值模式");
-            changed |= ui
-                .selectable_value(
-                    &mut material.ramp_data.interpolation,
-                    RampInterpolation::Constant,
-                    "常量",
-                )
-                .changed();
-            changed |= ui
-                .selectable_value(
-                    &mut material.ramp_data.interpolation,
-                    RampInterpolation::Linear,
-                    "线性",
-                )
-                .changed();
-        });
-
-        changed |= ui
-            .add(egui::Slider::new(&mut material.ramp_data.resolution, 2..=64).text("分辨率"))
-            .changed();
-
-        if changed {
-            normalize_ramp_data(&mut material.ramp_data);
-            rebuild_ramp_texture(images, &material.ramp_texture, &material.ramp_data);
-        }
-    });
 }
 
 fn show_container_ramp_editor(
@@ -825,48 +737,16 @@ fn show_container_binding_resources(
     show_param_group(
         ui,
         "character_surface_container_resources_group",
-        "分区资源",
+        "贴图资源",
         None,
         true,
         |ui| {
             ui.horizontal(|ui| {
-                ui.label("分区 Mask");
-                ui.selectable_value(
-                    &mut state.container.region_mask_mode,
-                    CharacterSurfaceRegionMaskMode::None,
-                    "无",
-                );
-                ui.selectable_value(
-                    &mut state.container.region_mask_mode,
-                    CharacterSurfaceRegionMaskMode::ChannelsRgba,
-                    "RGBA 通道",
-                );
-            });
-
-            ui.horizontal(|ui| {
-                ui.label("法线贴图");
+                ui.label("基础色贴图覆盖");
                 ui.text_edit_singleline(
                     state
                         .resources
-                        .normal_texture
-                        .get_or_insert_with(String::new),
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label("Region Mask");
-                ui.text_edit_singleline(
-                    state
-                        .resources
-                        .region_mask_texture
-                        .get_or_insert_with(String::new),
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label("光照控制");
-                ui.text_edit_singleline(
-                    state
-                        .resources
-                        .lighting_control_texture
+                        .base_color_texture
                         .get_or_insert_with(String::new),
                 );
             });
@@ -889,42 +769,25 @@ fn show_container_toon_editor(ui: &mut egui::Ui, params: &mut ToonParamsData) {
     *params = ToonParamsData::from_runtime(&runtime_params);
 }
 
-fn show_region_material_groups(
-    ui: &mut egui::Ui,
-    container: &mut CharacterSurfaceContainerProfile,
-) {
-    ui.add_space(6.0);
-    ui.label(egui::RichText::new("子区域材质").strong());
-    ui.small("按离线 mask 的 RGBA 通道分别调材质表现。");
-    ui.add_space(4.0);
-    show_character_surface_region_group(ui, "R 通道", "布料", &mut container.region_params.fabric);
-    show_character_surface_region_group(
+fn show_material_shading_editor(ui: &mut egui::Ui, shading: &mut MaterialShadingParams) {
+    show_param_group(
         ui,
-        "G 通道",
-        "硬表面",
-        &mut container.region_params.hard_surface,
+        "character_material_shading_group",
+        "附加受光",
+        None,
+        true,
+        |ui| {
+            ui.add(egui::Slider::new(&mut shading.specular_scale, 0.0..=2.5).text("高光比例"));
+            ui.add(egui::Slider::new(&mut shading.rim_scale, 0.0..=2.5).text("边缘光比例"));
+            ui.add(egui::Slider::new(&mut shading.shadow_offset, -0.2..=0.2).text("阴影偏移"));
+            ui.add(
+                egui::Slider::new(&mut shading.shadow_softness_bias, -0.4..=0.4)
+                    .text("阴影柔和偏移"),
+            );
+            ui.add(egui::Slider::new(&mut shading.shadow_color_mix, 0.0..=1.0).text("阴影染色"));
+            ui.add(egui::Slider::new(&mut shading.highlight_boost, 0.0..=1.0).text("亮部增强"));
+        },
     );
-    show_character_surface_region_group(ui, "B 通道", "金属", &mut container.region_params.metal);
-    show_character_surface_region_group(ui, "A 通道", "皮革", &mut container.region_params.leather);
-}
-
-fn show_character_surface_region_group(
-    ui: &mut egui::Ui,
-    channel_label: &str,
-    title: &str,
-    params: &mut CharacterSurfaceRegionParams,
-) {
-    ui.group(|ui| {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(title).strong());
-            ui.small(channel_label);
-        });
-        ui.add(egui::Slider::new(&mut params.specular_boost, 0.0..=2.0).text("高光增强"));
-        ui.add(egui::Slider::new(&mut params.rim_boost, 0.0..=2.0).text("边缘光增强"));
-        ui.add(egui::Slider::new(&mut params.shadow_bias, -0.5..=0.5).text("阴影偏移"));
-        ui.add(egui::Slider::new(&mut params.detail_normal_weight, 0.0..=1.0).text("细节法线"));
-    });
-    ui.add_space(6.0);
 }
 
 fn apply_character_surface_editor_state_to_material(
@@ -936,15 +799,13 @@ fn apply_character_surface_editor_state_to_material(
     state.resources = normalize_render_part_resources(state.resources.clone());
     let use_base_color_texture = material.params.use_base_color_texture;
     state
-        .container
+        .profile
         .toon
         .clone()
         .apply_to_material(material, images);
     material.params.use_base_color_texture = use_base_color_texture;
-    material.character_surface = crate::npr::toon::CharacterSurfaceParams::from_profile(
-        &state.container,
-        state.resources.region_mask_texture.is_some(),
-    );
+    material.character_material =
+        crate::npr::toon::CharacterMaterialParams::from_profile(&state.profile, &state.shader_key);
     material.apply_render_part_resources(&state.resources, asset_server);
 }
 
@@ -1128,8 +989,9 @@ fn sync_character_surface_profile_editor_state(
     }
 
     state.selected_entity = Some(selected_entity);
+    state.shader_key = CHARACTER_SURFACE_SHADER_KEY.to_string();
     state.resources = RenderPartResources::default();
-    state.container = CharacterSurfaceContainerProfile::from_material(material);
+    state.profile = CharacterMaterialProfile::from_material(material, CHARACTER_SURFACE_SHADER_KEY);
 
     let Some(scene_asset_path) = &source_info.scene_asset_path else {
         return;
@@ -1146,8 +1008,8 @@ fn sync_character_surface_profile_editor_state(
     };
 
     state.resources = part.resources.clone();
-    if let Ok(container) = ron_value_into::<CharacterSurfaceContainerProfile>(part.params.clone()) {
-        state.container = container;
+    if let Ok(profile) = ron_value_into::<CharacterMaterialProfile>(part.params.clone()) {
+        state.profile = profile;
     }
 }
 
@@ -1158,12 +1020,12 @@ fn save_material_profile(
     material: &ToonMaterial,
     surface_profile_editor_state: &CharacterSurfaceContainerEditorState,
 ) -> String {
-    if profile_registry.get(&source_info.shader_key).is_none() {
-        return format!("未注册的着色器类型: {}", source_info.shader_key);
+    if profile_registry.get(CHARACTER_SURFACE_SHADER_KEY).is_none() {
+        return format!("未注册的着色器类型: {}", CHARACTER_SURFACE_SHADER_KEY);
     }
-    let mut surface_container = surface_profile_editor_state.container.clone();
-    surface_container.toon = crate::npr::toon::ToonMaterialData::from_material(material);
-    let params = match ron_value_from_serializable(&surface_container) {
+    let mut material_profile = surface_profile_editor_state.profile.clone();
+    material_profile.toon = crate::npr::toon::ToonMaterialData::from_material(material);
+    let params = match ron_value_from_serializable(&material_profile) {
         Ok(params) => params,
         Err(err) => return err,
     };
@@ -1187,7 +1049,7 @@ fn save_material_profile(
     for source_node in &source_info.source_nodes {
         profile.upsert_part(RenderPartBinding {
             binding_key: source_node.node_name.clone(),
-            shader_key: source_info.shader_key.clone(),
+            shader_key: CHARACTER_SURFACE_SHADER_KEY.to_string(),
             resources: normalize_render_part_resources(
                 surface_profile_editor_state.resources.clone(),
             ),
@@ -1233,90 +1095,14 @@ fn load_material_profile(
         asset_server,
     )?;
     surface_profile_editor_state.resources = part.resources.clone();
-    surface_profile_editor_state.container =
-        ron_value_into::<CharacterSurfaceContainerProfile>(part.params.clone())?;
+    surface_profile_editor_state.shader_key = CHARACTER_SURFACE_SHADER_KEY.to_string();
+    surface_profile_editor_state.profile =
+        ron_value_into::<CharacterMaterialProfile>(part.params.clone())?;
     Ok(())
-}
-
-fn show_character_surface_profile_editor(
-    ui: &mut egui::Ui,
-    state: &mut CharacterSurfaceContainerEditorState,
-) {
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("角色 Surface 容器").strong());
-        ui.add_space(6.0);
-
-        ui.horizontal(|ui| {
-            ui.label("分区 Mask");
-            ui.selectable_value(
-                &mut state.container.region_mask_mode,
-                CharacterSurfaceRegionMaskMode::None,
-                "无",
-            );
-            ui.selectable_value(
-                &mut state.container.region_mask_mode,
-                CharacterSurfaceRegionMaskMode::ChannelsRgba,
-                "RGBA 通道",
-            );
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("法线贴图");
-            ui.text_edit_singleline(
-                state
-                    .resources
-                    .normal_texture
-                    .get_or_insert_with(String::new),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.label("Region Mask");
-            ui.text_edit_singleline(
-                state
-                    .resources
-                    .region_mask_texture
-                    .get_or_insert_with(String::new),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.label("光照控制");
-            ui.text_edit_singleline(
-                state
-                    .resources
-                    .lighting_control_texture
-                    .get_or_insert_with(String::new),
-            );
-        });
-
-        show_scene_interaction_editor(ui, &mut state.container.scene_interaction);
-        show_character_surface_region_editor(
-            ui,
-            CharacterSurfaceRegionKind::Fabric,
-            &mut state.container.region_params.fabric,
-        );
-        show_character_surface_region_editor(
-            ui,
-            CharacterSurfaceRegionKind::HardSurface,
-            &mut state.container.region_params.hard_surface,
-        );
-        show_character_surface_region_editor(
-            ui,
-            CharacterSurfaceRegionKind::Metal,
-            &mut state.container.region_params.metal,
-        );
-        show_character_surface_region_editor(
-            ui,
-            CharacterSurfaceRegionKind::Leather,
-            &mut state.container.region_params.leather,
-        );
-    });
 }
 
 fn normalize_render_part_resources(mut resources: RenderPartResources) -> RenderPartResources {
     normalize_optional_string(&mut resources.base_color_texture);
-    normalize_optional_string(&mut resources.normal_texture);
-    normalize_optional_string(&mut resources.region_mask_texture);
-    normalize_optional_string(&mut resources.lighting_control_texture);
     resources
 }
 
@@ -1345,27 +1131,6 @@ fn show_scene_interaction_editor(ui: &mut egui::Ui, params: &mut SceneInteractio
             );
         },
     );
-}
-
-fn show_character_surface_region_editor(
-    ui: &mut egui::Ui,
-    region_kind: CharacterSurfaceRegionKind,
-    params: &mut CharacterSurfaceRegionParams,
-) {
-    let (id_source, title) = match region_kind {
-        CharacterSurfaceRegionKind::Fabric => ("character_surface_fabric_region_group", "布料"),
-        CharacterSurfaceRegionKind::HardSurface => {
-            ("character_surface_hard_surface_region_group", "硬表面")
-        }
-        CharacterSurfaceRegionKind::Metal => ("character_surface_metal_region_group", "金属"),
-        CharacterSurfaceRegionKind::Leather => ("character_surface_leather_region_group", "皮革"),
-    };
-    show_param_group(ui, id_source, title, None, false, |ui| {
-        ui.add(egui::Slider::new(&mut params.specular_boost, 0.0..=2.0).text("高光增强"));
-        ui.add(egui::Slider::new(&mut params.rim_boost, 0.0..=2.0).text("边缘光增强"));
-        ui.add(egui::Slider::new(&mut params.shadow_bias, -0.5..=0.5).text("阴影偏移"));
-        ui.add(egui::Slider::new(&mut params.detail_normal_weight, 0.0..=1.0).text("细节法线"));
-    });
 }
 
 fn normalize_ramp_data(ramp_data: &mut RampData) {

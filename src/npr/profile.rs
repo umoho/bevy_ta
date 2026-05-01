@@ -6,9 +6,9 @@ use std::{
 
 use bevy::prelude::*;
 use ron::value::Value as RonValue;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
-use super::toon::{CharacterSurfaceParams, ToonMaterial, ToonMaterialData};
+use super::toon::{CharacterMaterialParams, ToonMaterial, ToonMaterialData};
 
 pub const CHARACTER_SURFACE_SHADER_KEY: &str = "character_surface";
 pub const PROFILE_VERSION: u32 = 1;
@@ -20,7 +20,9 @@ impl Plugin for CharacterRenderProfilePlugin {
         app.init_resource::<ShaderProfileRegistry>();
         app.world_mut()
             .resource_mut::<ShaderProfileRegistry>()
-            .register(Box::new(CharacterSurfaceProfileHandler));
+            .register(Box::new(CharacterMaterialProfileHandler(
+                CHARACTER_SURFACE_SHADER_KEY,
+            )));
     }
 }
 
@@ -53,15 +55,18 @@ pub trait ShaderProfileHandler: Send + Sync {
     ) -> Result<(), String>;
 }
 
-struct CharacterSurfaceProfileHandler;
+struct CharacterMaterialProfileHandler(&'static str);
 
-impl ShaderProfileHandler for CharacterSurfaceProfileHandler {
+impl ShaderProfileHandler for CharacterMaterialProfileHandler {
     fn shader_key(&self) -> &'static str {
-        CHARACTER_SURFACE_SHADER_KEY
+        self.0
     }
 
     fn capture_toon_material(&self, material: &ToonMaterial) -> Result<RonValue, String> {
-        ron_value_from_serializable(&CharacterSurfaceContainerProfile::from_material(material))
+        ron_value_from_serializable(&CharacterMaterialProfile::from_material(
+            material,
+            CHARACTER_SURFACE_SHADER_KEY,
+        ))
     }
 
     fn apply_to_toon_material(
@@ -73,15 +78,10 @@ impl ShaderProfileHandler for CharacterSurfaceProfileHandler {
         asset_server: &AssetServer,
     ) -> Result<(), String> {
         let use_base_color_texture = material.params.use_base_color_texture;
-        let character_surface_container =
-            ron_value_into::<CharacterSurfaceContainerProfile>(params.clone())?;
-        material.character_surface = CharacterSurfaceParams::from_profile(
-            &character_surface_container,
-            resources.region_mask_texture.is_some(),
-        );
-        character_surface_container
-            .toon
-            .apply_to_material(material, images);
+        let profile = ron_value_into::<CharacterMaterialProfile>(params.clone())?;
+        material.character_material =
+            CharacterMaterialParams::from_profile(&profile, CHARACTER_SURFACE_SHADER_KEY);
+        profile.toon.apply_to_material(material, images);
         material.apply_render_part_resources(resources, asset_server);
         material.params.use_base_color_texture = use_base_color_texture;
         Ok(())
@@ -89,77 +89,27 @@ impl ShaderProfileHandler for CharacterSurfaceProfileHandler {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct CharacterSurfaceContainerProfile {
+pub struct CharacterMaterialProfile {
     pub toon: ToonMaterialData,
-    #[serde(
-        serialize_with = "serialize_region_mask_mode",
-        deserialize_with = "deserialize_region_mask_mode"
-    )]
-    pub region_mask_mode: CharacterSurfaceRegionMaskMode,
     pub scene_interaction: SceneInteractionParams,
-    pub region_params: CharacterSurfaceRegionParamSet,
+    pub shading: MaterialShadingParams,
 }
 
-impl CharacterSurfaceContainerProfile {
-    pub fn from_material(material: &ToonMaterial) -> Self {
-        Self {
-            toon: ToonMaterialData::from_material(material),
-            ..Default::default()
-        }
+impl CharacterMaterialProfile {
+    pub fn from_material(material: &ToonMaterial, _shader_key: &str) -> Self {
+        let mut profile = Self::default();
+        profile.toon = ToonMaterialData::from_material(material);
+        profile
     }
 }
 
-impl Default for CharacterSurfaceContainerProfile {
+impl Default for CharacterMaterialProfile {
     fn default() -> Self {
         Self {
             toon: ToonMaterialData::default(),
-            region_mask_mode: CharacterSurfaceRegionMaskMode::ChannelsRgba,
             scene_interaction: SceneInteractionParams::default(),
-            region_params: CharacterSurfaceRegionParamSet::default(),
+            shading: MaterialShadingParams::default(),
         }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CharacterSurfaceRegionMaskMode {
-    None,
-    ChannelsRgba,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CharacterSurfaceRegionKind {
-    Fabric,
-    HardSurface,
-    Metal,
-    Leather,
-}
-
-fn serialize_region_mask_mode<S>(
-    value: &CharacterSurfaceRegionMaskMode,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(match value {
-        CharacterSurfaceRegionMaskMode::None => "none",
-        CharacterSurfaceRegionMaskMode::ChannelsRgba => "channels_rgba",
-    })
-}
-
-fn deserialize_region_mask_mode<'de, D>(
-    deserializer: D,
-) -> Result<CharacterSurfaceRegionMaskMode, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    match value.as_str() {
-        "none" => Ok(CharacterSurfaceRegionMaskMode::None),
-        "channels_rgba" => Ok(CharacterSurfaceRegionMaskMode::ChannelsRgba),
-        other => Err(serde::de::Error::custom(format!(
-            "unknown region mask mode: {other}"
-        ))),
     }
 }
 
@@ -185,91 +135,50 @@ impl Default for SceneInteractionParams {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct CharacterSurfaceRegionParamSet {
-    pub fabric: CharacterSurfaceRegionParams,
-    pub hard_surface: CharacterSurfaceRegionParams,
-    pub metal: CharacterSurfaceRegionParams,
-    pub leather: CharacterSurfaceRegionParams,
+pub struct MaterialShadingParams {
+    pub specular_scale: f32,
+    pub rim_scale: f32,
+    pub shadow_offset: f32,
+    pub shadow_softness_bias: f32,
+    pub shadow_color_mix: f32,
+    pub highlight_boost: f32,
 }
 
-impl Default for CharacterSurfaceRegionParamSet {
+impl Default for MaterialShadingParams {
     fn default() -> Self {
         Self {
-            fabric: CharacterSurfaceRegionParams {
-                specular_boost: 0.15,
-                rim_boost: 0.12,
-                shadow_bias: 0.0,
-                detail_normal_weight: 0.35,
-            },
-            hard_surface: CharacterSurfaceRegionParams {
-                specular_boost: 0.65,
-                rim_boost: 0.4,
-                shadow_bias: 0.05,
-                detail_normal_weight: 0.2,
-            },
-            metal: CharacterSurfaceRegionParams {
-                specular_boost: 1.0,
-                rim_boost: 0.55,
-                shadow_bias: 0.08,
-                detail_normal_weight: 0.1,
-            },
-            leather: CharacterSurfaceRegionParams {
-                specular_boost: 0.45,
-                rim_boost: 0.25,
-                shadow_bias: 0.03,
-                detail_normal_weight: 0.25,
-            },
+            specular_scale: 1.0,
+            rim_scale: 1.0,
+            shadow_offset: 0.0,
+            shadow_softness_bias: 0.0,
+            shadow_color_mix: 0.0,
+            highlight_boost: 0.0,
         }
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct CharacterSurfaceRegionParams {
-    pub specular_boost: f32,
-    pub rim_boost: f32,
-    pub shadow_bias: f32,
-    pub detail_normal_weight: f32,
-}
-
-impl CharacterSurfaceParams {
-    pub fn from_profile(
-        profile: &CharacterSurfaceContainerProfile,
-        has_region_mask_texture: bool,
-    ) -> Self {
-        let mask_enabled = matches!(
-            profile.region_mask_mode,
-            CharacterSurfaceRegionMaskMode::ChannelsRgba
-        ) && has_region_mask_texture;
+impl CharacterMaterialParams {
+    pub fn from_profile(profile: &CharacterMaterialProfile, _shader_key: &str) -> Self {
         Self {
-            fabric: profile.region_params.fabric.into_runtime(),
-            hard_surface: profile.region_params.hard_surface.into_runtime(),
-            metal: profile.region_params.metal.into_runtime(),
-            leather: profile.region_params.leather.into_runtime(),
             scene_primary: Vec4::new(
                 profile.scene_interaction.direct_light_weight,
                 profile.scene_interaction.env_light_weight,
                 profile.scene_interaction.shadow_receive_weight,
                 profile.scene_interaction.ambient_floor,
             ),
-            // y 通道用作 shader 里的“是否启用 region mask”开关。
-            scene_secondary: Vec4::new(
+            shading_primary: Vec4::new(
+                0.0,
+                profile.shading.specular_scale,
+                profile.shading.rim_scale,
+                profile.shading.shadow_offset,
+            ),
+            shading_secondary: Vec4::new(
+                profile.shading.shadow_softness_bias,
+                profile.shading.shadow_color_mix,
+                profile.shading.highlight_boost,
                 profile.scene_interaction.light_color_influence,
-                f32::from(mask_enabled),
-                0.0,
-                0.0,
             ),
         }
-    }
-}
-
-impl CharacterSurfaceRegionParams {
-    pub fn into_runtime(&self) -> Vec4 {
-        Vec4::new(
-            self.specular_boost,
-            self.rim_boost,
-            self.shadow_bias,
-            self.detail_normal_weight,
-        )
     }
 }
 
@@ -346,9 +255,6 @@ pub struct RenderPartBinding {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct RenderPartResources {
     pub base_color_texture: Option<String>,
-    pub normal_texture: Option<String>,
-    pub region_mask_texture: Option<String>,
-    pub lighting_control_texture: Option<String>,
 }
 
 pub fn character_render_profile_path(scene_asset_path: &str) -> PathBuf {

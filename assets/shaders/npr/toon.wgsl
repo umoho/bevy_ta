@@ -27,13 +27,10 @@ struct ToonParams {
     outline_color: vec4<f32>,
 }
 
-struct CharacterSurfaceParams {
-    fabric: vec4<f32>,
-    hard_surface: vec4<f32>,
-    metal: vec4<f32>,
-    leather: vec4<f32>,
+struct CharacterMaterialParams {
     scene_primary: vec4<f32>,
-    scene_secondary: vec4<f32>,
+    shading_primary: vec4<f32>,
+    shading_secondary: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> toon: ToonParams;
@@ -41,9 +38,7 @@ struct CharacterSurfaceParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var base_color_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var ramp_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var ramp_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> character_surface: CharacterSurfaceParams;
-@group(#{MATERIAL_BIND_GROUP}) @binding(6) var region_mask_texture: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(7) var region_mask_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> character_material: CharacterMaterialParams;
 
 fn main_light_direction() -> vec3<f32> {
     if view_bindings::lights.n_directional_lights > 0u {
@@ -81,18 +76,14 @@ fn sample_base_color(in: VertexOutput) -> vec4<f32> {
     return color;
 }
 
-fn sample_region_weights(in: VertexOutput) -> vec4<f32> {
-#ifdef VERTEX_UVS_A
-    if character_surface.scene_secondary.y > 0.5 {
-        let raw_mask = textureSample(region_mask_texture, region_mask_sampler, in.uv);
-        let clamped_mask = max(raw_mask, vec4<f32>(0.0));
-        let weight_sum = dot(clamped_mask, vec4<f32>(1.0));
-        if weight_sum > 0.0001 {
-            return clamped_mask / weight_sum;
-        }
+fn sample_world_normal(in: VertexOutput, is_front: bool) -> vec3<f32> {
+    var normal = normalize(in.world_normal);
+
+    if !is_front {
+        normal = -normal;
     }
-#endif
-    return vec4<f32>(1.0, 0.0, 0.0, 0.0);
+
+    return normalize(normal);
 }
 
 @fragment
@@ -102,52 +93,31 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
         discard;
     }
 
-    var normal = normalize(in.world_normal);
-    if !is_front {
-        normal = -normal;
-    }
+    let normal = sample_world_normal(in, is_front);
 
     let light_dir = main_light_direction();
     let light_color = main_light_color();
     let view_dir = normalize(view_bindings::view.world_position.xyz - in.world_position.xyz);
-    let region_weights = sample_region_weights(in);
-    let region_specular_boost = dot(
-        region_weights,
-        vec4<f32>(
-            character_surface.fabric.x,
-            character_surface.hard_surface.x,
-            character_surface.metal.x,
-            character_surface.leather.x,
-        ),
-    );
-    let region_rim_boost = dot(
-        region_weights,
-        vec4<f32>(
-            character_surface.fabric.y,
-            character_surface.hard_surface.y,
-            character_surface.metal.y,
-            character_surface.leather.y,
-        ),
-    );
-    let region_shadow_bias = dot(
-        region_weights,
-        vec4<f32>(
-            character_surface.fabric.z,
-            character_surface.hard_surface.z,
-            character_surface.metal.z,
-            character_surface.leather.z,
-        ),
-    );
+    let specular_scale = character_material.shading_primary.y;
+    let rim_scale = character_material.shading_primary.z;
+    let shadow_offset = character_material.shading_primary.w;
+    let shadow_softness_bias = character_material.shading_secondary.x;
+    let shadow_color_mix = character_material.shading_secondary.y;
+    let highlight_boost = character_material.shading_secondary.z;
+    let light_color_influence = character_material.shading_secondary.w;
 
-    let direct_light_weight = character_surface.scene_primary.x;
-    let env_light_weight = character_surface.scene_primary.y;
-    let shadow_receive_weight = character_surface.scene_primary.z;
-    let ambient_floor = character_surface.scene_primary.w;
-    let light_color_influence = character_surface.scene_secondary.x;
+    var direct_light_weight = character_material.scene_primary.x;
+    var env_light_weight = character_material.scene_primary.y;
+    var shadow_receive_weight = character_material.scene_primary.z;
+    var ambient_floor = character_material.scene_primary.w;
+    var shade_threshold = toon.shade_threshold;
+    var shade_softness = toon.shade_softness + shadow_softness_bias;
+    var specular_strength = toon.specular_strength * specular_scale;
+    var rim_strength = toon.rim_strength * rim_scale;
+    var ndotl = saturate(dot(normal, light_dir) + shadow_offset);
 
-    let ndotl = saturate(dot(normal, light_dir) + region_shadow_bias);
-    let edge0 = saturate(toon.shade_threshold - toon.shade_softness);
-    let edge1 = saturate(toon.shade_threshold + toon.shade_softness);
+    let edge0 = saturate(shade_threshold - shade_softness);
+    let edge1 = saturate(shade_threshold + shade_softness);
     let ramp_u = mix(1.0, smoothstep(edge0, edge1, ndotl), shadow_receive_weight);
     let ramp_color = textureSample(ramp_texture, ramp_sampler, vec2<f32>(ramp_u, 0.5)).rgb;
 
@@ -158,10 +128,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
     );
     let shade = mix(
         vec3<f32>(1.0 - toon.shadow_strength * shadow_receive_weight),
-        vec3<f32>(toon.lit_boost),
+        vec3<f32>(toon.lit_boost + highlight_boost),
         ramp_u,
     );
-    var final_rgb = base_color.rgb * ramp_color * shade * remapped_light_color * direct_light_weight
+    let shadow_tint = mix(vec3<f32>(1.0), vec3<f32>(1.08, 0.96, 0.94), shadow_color_mix);
+    let shaded_base = mix(base_color.rgb * shadow_tint, base_color.rgb, ramp_u);
+
+    var final_rgb = shaded_base * ramp_color * shade * remapped_light_color * direct_light_weight
         + base_color.rgb * ambient;
 
     let half_vec = normalize(light_dir + view_dir);
@@ -170,8 +143,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
     let specular_end = saturate(toon.specular_threshold + toon.specular_softness);
     let specular_enabled = select(0.0, 1.0, toon.specular_enabled != 0u);
     let specular = smoothstep(specular_start, specular_end, specular_base)
-        * toon.specular_strength
-        * region_specular_boost
+        * specular_strength
         * specular_enabled;
     final_rgb += toon.specular_color.rgb * specular;
 
@@ -180,8 +152,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
     let rim_end = saturate(toon.rim_threshold + toon.rim_softness);
     let rim_enabled = select(0.0, 1.0, toon.rim_enabled != 0u);
     let rim = smoothstep(rim_start, rim_end, rim_base)
-        * toon.rim_strength
-        * region_rim_boost
+        * rim_strength
         * rim_enabled;
     final_rgb += toon.rim_color.rgb * rim;
 
