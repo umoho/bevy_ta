@@ -1,6 +1,8 @@
 #import bevy_pbr::{
     forward_io::VertexOutput,
     mesh_view_bindings as view_bindings,
+    mesh_view_types,
+    shadows,
 }
 
 struct ToonParams {
@@ -58,6 +60,45 @@ fn main_light_color() -> vec3<f32> {
         }
     }
     return vec3<f32>(1.0);
+}
+
+fn direction_world_to_view(direction: vec3<f32>) -> vec3<f32> {
+    return normalize((view_bindings::view.view_from_world * vec4<f32>(direction, 0.0)).xyz);
+}
+
+fn safe_normalize2(value: vec2<f32>) -> vec2<f32> {
+    let len = length(value);
+    if len > 0.0001 {
+        return value / len;
+    }
+    return vec2<f32>(0.0);
+}
+
+fn main_light_screen_rim_mask(normal: vec3<f32>, light_dir: vec3<f32>) -> f32 {
+    let normal_view = direction_world_to_view(normal);
+    let light_view = direction_world_to_view(light_dir);
+    let light_screen_len = length(light_view.xy);
+
+    if light_screen_len <= 0.0001 {
+        return 1.0;
+    }
+
+    let alignment = dot(safe_normalize2(normal_view.xy), light_view.xy / light_screen_len);
+    return smoothstep(-0.25, 0.75, alignment);
+}
+
+fn main_directional_shadow(in: VertexOutput, normal: vec3<f32>) -> f32 {
+    if view_bindings::lights.n_directional_lights == 0u {
+        return 1.0;
+    }
+
+    let main_light = view_bindings::lights.directional_lights[0u];
+    if (main_light.flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) == 0u {
+        return 1.0;
+    }
+
+    let view_position = view_bindings::view.view_from_world * in.world_position;
+    return shadows::fetch_directional_shadow(0u, in.world_position, normal, view_position.z);
 }
 
 fn sample_base_color(in: VertexOutput) -> vec4<f32> {
@@ -151,7 +192,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
     let rim_start = saturate(toon.rim_threshold - toon.rim_softness);
     let rim_end = saturate(toon.rim_threshold + toon.rim_softness);
     let rim_enabled = select(0.0, 1.0, toon.rim_enabled != 0u);
+    let rim_light_mask = main_light_screen_rim_mask(normal, light_dir);
+    let rim_shadow = mix(1.0, main_directional_shadow(in, normal), shadow_receive_weight);
     let rim = smoothstep(rim_start, rim_end, rim_base)
+        * rim_light_mask
+        * rim_shadow
         * rim_strength
         * rim_enabled;
     final_rgb += toon.rim_color.rgb * rim;
