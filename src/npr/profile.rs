@@ -8,9 +8,13 @@ use bevy::prelude::*;
 use ron::value::Value as RonValue;
 use serde::{Deserialize, Serialize};
 
-use super::toon::{CharacterMaterialParams, ToonMaterial, ToonMaterialData};
+use super::toon::{
+    CharacterMaterialParams, FaceSdfParams, FaceSdfParamsData, ToonMaterial, ToonMaterialData,
+};
 
 pub const CHARACTER_SURFACE_SHADER_KEY: &str = "character_surface";
+pub const CHARACTER_HAIR_SHADER_KEY: &str = "character_hair";
+pub const CHARACTER_FACE_SDF_SHADER_KEY: &str = "character_face_sdf";
 pub const PROFILE_VERSION: u32 = 1;
 
 pub struct CharacterRenderProfilePlugin;
@@ -18,11 +22,19 @@ pub struct CharacterRenderProfilePlugin;
 impl Plugin for CharacterRenderProfilePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ShaderProfileRegistry>();
-        app.world_mut()
-            .resource_mut::<ShaderProfileRegistry>()
-            .register(Box::new(CharacterMaterialProfileHandler(
-                CHARACTER_SURFACE_SHADER_KEY,
-            )));
+        let mut registry = app.world_mut().resource_mut::<ShaderProfileRegistry>();
+        registry.register(Box::new(CharacterMaterialProfileHandler {
+            shader_key: CHARACTER_SURFACE_SHADER_KEY,
+            use_face_sdf: false,
+        }));
+        registry.register(Box::new(CharacterMaterialProfileHandler {
+            shader_key: CHARACTER_HAIR_SHADER_KEY,
+            use_face_sdf: false,
+        }));
+        registry.register(Box::new(CharacterMaterialProfileHandler {
+            shader_key: CHARACTER_FACE_SDF_SHADER_KEY,
+            use_face_sdf: true,
+        }));
     }
 }
 
@@ -55,17 +67,20 @@ pub trait ShaderProfileHandler: Send + Sync {
     ) -> Result<(), String>;
 }
 
-struct CharacterMaterialProfileHandler(&'static str);
+struct CharacterMaterialProfileHandler {
+    shader_key: &'static str,
+    use_face_sdf: bool,
+}
 
 impl ShaderProfileHandler for CharacterMaterialProfileHandler {
     fn shader_key(&self) -> &'static str {
-        self.0
+        self.shader_key
     }
 
     fn capture_toon_material(&self, material: &ToonMaterial) -> Result<RonValue, String> {
         ron_value_from_serializable(&CharacterMaterialProfile::from_material(
             material,
-            CHARACTER_SURFACE_SHADER_KEY,
+            self.shader_key,
         ))
     }
 
@@ -80,7 +95,12 @@ impl ShaderProfileHandler for CharacterMaterialProfileHandler {
         let use_base_color_texture = material.params.use_base_color_texture;
         let profile = ron_value_into::<CharacterMaterialProfile>(params.clone())?;
         material.character_material =
-            CharacterMaterialParams::from_profile(&profile, CHARACTER_SURFACE_SHADER_KEY);
+            CharacterMaterialParams::from_profile(&profile, self.shader_key);
+        material.face_sdf = if self.use_face_sdf {
+            FaceSdfParams::from_profile(&profile, self.shader_key)
+        } else {
+            FaceSdfParams::default()
+        };
         profile.toon.apply_to_material(material, images);
         material.apply_render_part_resources(resources, asset_server);
         material.params.use_base_color_texture = use_base_color_texture;
@@ -93,12 +113,15 @@ pub struct CharacterMaterialProfile {
     pub toon: ToonMaterialData,
     pub scene_interaction: SceneInteractionParams,
     pub shading: MaterialShadingParams,
+    #[serde(default)]
+    pub face_sdf: FaceSdfParamsData,
 }
 
 impl CharacterMaterialProfile {
-    pub fn from_material(material: &ToonMaterial, _shader_key: &str) -> Self {
+    pub fn from_material(material: &ToonMaterial, shader_key: &str) -> Self {
         let mut profile = Self::default();
         profile.toon = ToonMaterialData::from_material(material);
+        profile.face_sdf = FaceSdfParamsData::from_runtime(&material.face_sdf, shader_key);
         profile
     }
 }
@@ -109,6 +132,7 @@ impl Default for CharacterMaterialProfile {
             toon: ToonMaterialData::default(),
             scene_interaction: SceneInteractionParams::default(),
             shading: MaterialShadingParams::default(),
+            face_sdf: FaceSdfParamsData::default(),
         }
     }
 }
@@ -179,6 +203,12 @@ impl CharacterMaterialParams {
                 profile.scene_interaction.light_color_influence,
             ),
         }
+    }
+}
+
+impl FaceSdfParams {
+    pub fn from_profile(profile: &CharacterMaterialProfile, shader_key: &str) -> Self {
+        FaceSdfParamsData::clone_for_shader_key(&profile.face_sdf, shader_key).into_runtime()
     }
 }
 
@@ -255,6 +285,8 @@ pub struct RenderPartBinding {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct RenderPartResources {
     pub base_color_texture: Option<String>,
+    #[serde(default)]
+    pub face_shadow_texture: Option<String>,
 }
 
 pub fn character_render_profile_path(scene_asset_path: &str) -> PathBuf {

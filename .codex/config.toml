@@ -14,3 +14,12 @@ approval_mode = "approve"
 
 [mcp_servers.bevy-brp.tools.brp_shutdown]
 approval_mode = "approve"
+
+[mcp_servers.bevy-brp.tools.world_insert_components]
+approval_mode = "approve"
+
+[mcp_servers.bevy-brp.tools.world_mutate_components]
+approval_mode = "approve"
+
+[mcp_servers.bevy-brp.tools.world_mutate_resources]
+approval_mode = "approve"

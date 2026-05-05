@@ -4,6 +4,7 @@
     mesh_view_types,
     shadows,
 }
+#import "shaders/npr/toon/face_sdf.wgsl" as face_sdf_module
 
 struct ToonParams {
     base_color: vec4<f32>,
@@ -35,24 +36,46 @@ struct CharacterMaterialParams {
     shading_secondary: vec4<f32>,
 }
 
+struct FaceSdfParams {
+    enabled: u32,
+    texture_enabled: u32,
+    uv_mirror_enabled: u32,
+    debug_mode: u32,
+    shadow_strength: f32,
+    blend_weight: f32,
+    threshold_bias: f32,
+    softness: f32,
+    horizontal_scale: f32,
+    horizontal_bias: f32,
+    vertical_influence: f32,
+    backlight_clamp: f32,
+    procedural_terminator_softness: f32,
+    procedural_vertical_curve: f32,
+    reserved0: f32,
+    reserved1: f32,
+    face_forward: vec4<f32>,
+    face_right: vec4<f32>,
+    face_up: vec4<f32>,
+}
+
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> toon: ToonParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var base_color_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var base_color_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var ramp_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var ramp_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<uniform> character_material: CharacterMaterialParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> face_sdf: FaceSdfParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(7) var face_shadow_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(8) var face_shadow_sampler: sampler;
 
-/// 返回角色卡通着色使用的主方向光方向；没有方向光时使用稳定的预览方向。
 fn main_light_direction() -> vec3<f32> {
     if view_bindings::lights.n_directional_lights > 0u {
         return normalize(view_bindings::lights.directional_lights[0].direction_to_light);
     }
 
-    // 没有主光时给一个稳定方向，方便空场景和材质预览也能看出明暗分区。
     return normalize(vec3<f32>(-0.35, 0.8, 0.45));
 }
 
-/// 返回归一化后的主方向光颜色，避免光强数值直接改变材质色相。
 fn main_light_color() -> vec3<f32> {
     if view_bindings::lights.n_directional_lights > 0u {
         let raw_color = view_bindings::lights.directional_lights[0].color.rgb;
@@ -64,12 +87,10 @@ fn main_light_color() -> vec3<f32> {
     return vec3<f32>(1.0);
 }
 
-/// 将世界空间方向转换到观察空间，供屏幕方向相关的效果使用。
 fn direction_world_to_view(direction: vec3<f32>) -> vec3<f32> {
     return normalize((view_bindings::view.view_from_world * vec4<f32>(direction, 0.0)).xyz);
 }
 
-/// 安全归一化二维向量，避免零长度方向在边缘光 mask 中产生异常。
 fn safe_normalize2(value: vec2<f32>) -> vec2<f32> {
     let len = length(value);
     if len > 0.0001 {
@@ -78,7 +99,6 @@ fn safe_normalize2(value: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(0.0);
 }
 
-/// 根据主光在屏幕上的方向，压制背离主光一侧的普通 Fresnel 边缘光。
 fn main_light_screen_rim_mask(normal: vec3<f32>, light_dir: vec3<f32>) -> f32 {
     let normal_view = direction_world_to_view(normal);
     let light_view = direction_world_to_view(light_dir);
@@ -92,7 +112,6 @@ fn main_light_screen_rim_mask(normal: vec3<f32>, light_dir: vec3<f32>) -> f32 {
     return smoothstep(-0.25, 0.75, alignment);
 }
 
-/// 采样主方向光的 shadow factor；没有方向光或未开阴影时返回全亮。
 fn main_directional_shadow(in: VertexOutput, normal: vec3<f32>) -> f32 {
     if view_bindings::lights.n_directional_lights == 0u {
         return 1.0;
@@ -107,7 +126,6 @@ fn main_directional_shadow(in: VertexOutput, normal: vec3<f32>) -> f32 {
     return shadows::fetch_directional_shadow(0u, in.world_position, normal, view_position.z);
 }
 
-/// 采样材质基础色，并叠加基础色贴图和顶点色。
 fn sample_base_color(in: VertexOutput) -> vec4<f32> {
     var color = toon.base_color;
 
@@ -124,7 +142,6 @@ fn sample_base_color(in: VertexOutput) -> vec4<f32> {
     return color;
 }
 
-/// 获取世界空间法线，并在双面片元背面时翻转法线。
 fn sample_world_normal(in: VertexOutput, is_front: bool) -> vec3<f32> {
     var normal = normalize(in.world_normal);
 
@@ -135,7 +152,6 @@ fn sample_world_normal(in: VertexOutput, is_front: bool) -> vec3<f32> {
     return normalize(normal);
 }
 
-/// 计算 ramp 采样横坐标，包含主光 NdotL、阴影偏移、柔和度和阴影接收权重。
 fn toon_ramp_u(normal: vec3<f32>, light_dir: vec3<f32>) -> f32 {
     let shadow_offset = character_material.shading_primary.w;
     let shadow_softness_bias = character_material.shading_secondary.x;
@@ -148,12 +164,10 @@ fn toon_ramp_u(normal: vec3<f32>, light_dir: vec3<f32>) -> f32 {
     return mix(1.0, smoothstep(edge0, edge1, ndotl), shadow_receive_weight);
 }
 
-/// 从 ramp 纹理读取当前光照阶调颜色。
 fn sample_ramp_color(ramp_u: f32) -> vec3<f32> {
     return textureSample(ramp_texture, ramp_sampler, vec2<f32>(ramp_u, 0.5)).rgb;
 }
 
-/// 计算环境光，并用材质地板值保证暗部不会完全压黑。
 fn toon_ambient() -> vec3<f32> {
     let env_light_weight = character_material.scene_primary.y;
     let ambient_floor = character_material.scene_primary.w;
@@ -164,7 +178,6 @@ fn toon_ambient() -> vec3<f32> {
     );
 }
 
-/// 计算 toon 基础受光颜色，包括 ramp、亮暗强度、主光颜色影响和阴影染色。
 fn toon_lit_base(
     base_rgb: vec3<f32>,
     ramp_u: f32,
@@ -190,7 +203,6 @@ fn toon_lit_base(
         + base_rgb * toon_ambient();
 }
 
-/// 计算硬阈值高光，并返回可直接叠加到最终颜色的高光颜色。
 fn toon_specular(normal: vec3<f32>, light_dir: vec3<f32>, view_dir: vec3<f32>) -> vec3<f32> {
     let specular_scale = character_material.shading_primary.y;
     let specular_strength = toon.specular_strength * specular_scale;
@@ -206,7 +218,6 @@ fn toon_specular(normal: vec3<f32>, light_dir: vec3<f32>, view_dir: vec3<f32>) -
     return toon.specular_color.rgb * specular;
 }
 
-/// 计算受主光屏幕方向和主光阴影共同控制的 Fresnel 边缘光。
 fn toon_rim(
     in: VertexOutput,
     normal: vec3<f32>,
@@ -231,7 +242,57 @@ fn toon_rim(
     return toon.rim_color.rgb * rim;
 }
 
-/// 片元入口：组合基础 toon 受光、高光和边缘光。
+fn face_sdf_ramp_override(
+    in: VertexOutput,
+    base_ramp_u: f32,
+    light_dir: vec3<f32>,
+) -> vec4<f32> {
+    let face_forward = normalize(face_sdf.face_forward.xyz);
+    let face_right = normalize(face_sdf.face_right.xyz);
+    let face_up = normalize(face_sdf.face_up.xyz);
+    let face_light = vec3<f32>(
+        dot(light_dir, face_right),
+        dot(light_dir, face_up),
+        dot(light_dir, face_forward),
+    );
+    let face_uv = face_sdf_module::face_sdf_mirrored_uv(in.uv, face_light.x, face_sdf.uv_mirror_enabled);
+
+    var face_sample = face_sdf_module::face_sdf_procedural_sample(
+        face_uv,
+        face_sdf.procedural_terminator_softness,
+        face_sdf.procedural_vertical_curve,
+    );
+    if face_sdf.texture_enabled != 0u {
+        face_sample = textureSample(face_shadow_texture, face_shadow_sampler, face_uv).r;
+    }
+
+    let threshold = face_sdf_module::face_sdf_threshold(
+        face_light.x,
+        face_light.y,
+        face_sdf.horizontal_scale,
+        face_sdf.horizontal_bias,
+        face_sdf.vertical_influence,
+        face_sdf.backlight_clamp,
+        face_sdf.threshold_bias,
+    );
+    let face_lit = face_sdf_module::face_sdf_lit_mask(face_sample, threshold, face_sdf.softness);
+    let face_shadow_floor = 1.0 - face_sdf.shadow_strength;
+    let face_ramp_u = mix(face_shadow_floor, 1.0, face_lit);
+    let resolved_ramp_u = mix(base_ramp_u, face_ramp_u, face_sdf.blend_weight);
+
+    if face_sdf.debug_mode == 1u {
+        return vec4<f32>(vec3<f32>(face_sample), 1.0);
+    }
+    if face_sdf.debug_mode == 2u {
+        return vec4<f32>(vec3<f32>(threshold), 1.0);
+    }
+    if face_sdf.debug_mode == 3u {
+        return vec4<f32>(vec3<f32>(face_lit), 1.0);
+    }
+
+    return vec4<f32>(vec3<f32>(resolved_ramp_u), 0.0);
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @location(0) vec4<f32> {
     var base_color = sample_base_color(in);
@@ -245,7 +306,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> @locatio
     let light_color = main_light_color();
     let view_dir = normalize(view_bindings::view.world_position.xyz - in.world_position.xyz);
 
-    let ramp_u = toon_ramp_u(normal, light_dir);
+    var ramp_u = toon_ramp_u(normal, light_dir);
+    if face_sdf.enabled != 0u {
+        let face_override = face_sdf_ramp_override(in, ramp_u, light_dir);
+        if face_override.a > 0.5 {
+            return face_override;
+        }
+        ramp_u = face_override.r;
+    }
+
     let ramp_color = sample_ramp_color(ramp_u);
     var final_rgb = toon_lit_base(base_color.rgb, ramp_u, ramp_color, light_color);
     final_rgb += toon_specular(normal, light_dir, view_dir);

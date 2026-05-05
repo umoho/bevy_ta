@@ -13,13 +13,14 @@ use bevy_material_preview::{MaterialPreviewAppExt, MaterialPreviewPlugin, Materi
 
 use crate::npr::{
     profile::{
-        CHARACTER_SURFACE_SHADER_KEY, CharacterMaterialProfile, CharacterRenderProfile,
-        MaterialShadingParams, ModelBinding, PROFILE_VERSION, RenderPartBinding,
-        RenderPartResources, SceneInteractionParams, ShaderProfileRegistry,
-        character_render_profile_path, ron_value_from_serializable, ron_value_into,
+        CHARACTER_FACE_SDF_SHADER_KEY, CHARACTER_HAIR_SHADER_KEY, CHARACTER_SURFACE_SHADER_KEY,
+        CharacterMaterialProfile, CharacterRenderProfile, MaterialShadingParams, ModelBinding,
+        PROFILE_VERSION, RenderPartBinding, RenderPartResources, SceneInteractionParams,
+        ShaderProfileRegistry, character_render_profile_path, ron_value_from_serializable,
+        ron_value_into,
     },
     toon::{
-        RampData, RampDataFile, RampInterpolation, RampStop, ToonMaterial,
+        FaceSdfParamsData, RampData, RampDataFile, RampInterpolation, RampStop, ToonMaterial,
         ToonMaterialBindingSource, ToonMaterialData, ToonMaterialTarget, ToonParams,
         ToonParamsData, default_ramp_data, rebuild_ramp_texture,
     },
@@ -548,6 +549,8 @@ fn show_model_binding_editor(
 ) {
     ui.group(|ui| {
         ui.label(egui::RichText::new("模型绑定").strong());
+        show_shader_key_selector(ui, &mut surface_profile_editor_state.shader_key);
+        ui.add_space(6.0);
         if let Some(scene_asset_path) = &source_info.scene_asset_path {
             ui.small(format!("模型资源 {}", scene_asset_path));
         }
@@ -614,6 +617,7 @@ fn show_character_surface_material_editor(
 ) {
     // 当前材质统一使用同一套 toon 骨架；不同部位通过材质实例参数拉开表现。
     state.profile.toon = ToonMaterialData::from_material(material);
+    state.profile.face_sdf = FaceSdfParamsData::from_runtime(&material.face_sdf, &state.shader_key);
 
     ui.group(|ui| {
         ui.label(egui::RichText::new("统一 Toon 材质").strong());
@@ -629,6 +633,9 @@ fn show_character_surface_material_editor(
         );
         show_container_toon_editor(ui, &mut state.profile.toon.params);
         show_material_shading_editor(ui, &mut state.profile.shading);
+        if state.shader_key == CHARACTER_FACE_SDF_SHADER_KEY {
+            show_face_sdf_editor(ui, &mut state.profile.face_sdf);
+        }
     });
 
     apply_character_surface_editor_state_to_material(asset_server, images, material, state);
@@ -750,6 +757,17 @@ fn show_container_binding_resources(
                         .get_or_insert_with(String::new),
                 );
             });
+            if state.shader_key == CHARACTER_FACE_SDF_SHADER_KEY {
+                ui.horizontal(|ui| {
+                    ui.label("面部阴影贴图");
+                    ui.text_edit_singleline(
+                        state
+                            .resources
+                            .face_shadow_texture
+                            .get_or_insert_with(String::new),
+                    );
+                });
+            }
         },
     );
 }
@@ -790,6 +808,65 @@ fn show_material_shading_editor(ui: &mut egui::Ui, shading: &mut MaterialShading
     );
 }
 
+fn show_face_sdf_editor(ui: &mut egui::Ui, params: &mut FaceSdfParamsData) {
+    show_param_group(
+        ui,
+        "character_face_sdf_group",
+        "面部 SDF",
+        None,
+        true,
+        |ui| {
+            ui.checkbox(&mut params.enabled, "启用面部 SDF");
+            ui.checkbox(&mut params.use_texture, "使用面部阴影贴图");
+            ui.checkbox(&mut params.uv_mirror_enabled, "按左右光向镜像 U");
+            ui.add(egui::Slider::new(&mut params.shadow_strength, 0.0..=1.0).text("阴影强度"));
+            ui.add(egui::Slider::new(&mut params.blend_weight, 0.0..=1.0).text("替代权重"));
+            ui.add(egui::Slider::new(&mut params.threshold_bias, -0.5..=0.5).text("阈值偏移"));
+            ui.add(egui::Slider::new(&mut params.softness, 0.0..=0.2).text("边界柔和"));
+            ui.add(egui::Slider::new(&mut params.horizontal_scale, 0.0..=2.0).text("水平光影响"));
+            ui.add(egui::Slider::new(&mut params.horizontal_bias, -1.0..=1.0).text("水平偏移"));
+            ui.add(egui::Slider::new(&mut params.vertical_influence, 0.0..=1.0).text("垂直光影响"));
+            ui.add(egui::Slider::new(&mut params.backlight_clamp, 0.0..=1.0).text("背光钳制"));
+            ui.add(
+                egui::Slider::new(&mut params.procedural_terminator_softness, 0.0..=0.5)
+                    .text("程序化边界宽度"),
+            );
+            ui.add(
+                egui::Slider::new(&mut params.procedural_vertical_curve, 0.0..=1.0)
+                    .text("程序化垂直修正"),
+            );
+            ui.horizontal(|ui| {
+                ui.label("调试模式");
+                ui.selectable_value(&mut params.debug_mode, 0, "关闭");
+                ui.selectable_value(&mut params.debug_mode, 1, "采样");
+                ui.selectable_value(&mut params.debug_mode, 2, "阈值");
+                ui.selectable_value(&mut params.debug_mode, 3, "结果");
+            });
+        },
+    );
+}
+
+fn show_shader_key_selector(ui: &mut egui::Ui, shader_key: &mut String) {
+    ui.horizontal(|ui| {
+        ui.label("着色器类型");
+        ui.selectable_value(
+            shader_key,
+            CHARACTER_SURFACE_SHADER_KEY.to_string(),
+            CHARACTER_SURFACE_SHADER_KEY,
+        );
+        ui.selectable_value(
+            shader_key,
+            CHARACTER_HAIR_SHADER_KEY.to_string(),
+            CHARACTER_HAIR_SHADER_KEY,
+        );
+        ui.selectable_value(
+            shader_key,
+            CHARACTER_FACE_SDF_SHADER_KEY.to_string(),
+            CHARACTER_FACE_SDF_SHADER_KEY,
+        );
+    });
+}
+
 fn apply_character_surface_editor_state_to_material(
     asset_server: &AssetServer,
     images: &mut Assets<Image>,
@@ -806,6 +883,7 @@ fn apply_character_surface_editor_state_to_material(
     material.params.use_base_color_texture = use_base_color_texture;
     material.character_material =
         crate::npr::toon::CharacterMaterialParams::from_profile(&state.profile, &state.shader_key);
+    material.face_sdf = state.profile.face_sdf.clone().into_runtime();
     material.apply_render_part_resources(&state.resources, asset_server);
 }
 
@@ -989,9 +1067,9 @@ fn sync_character_surface_profile_editor_state(
     }
 
     state.selected_entity = Some(selected_entity);
-    state.shader_key = CHARACTER_SURFACE_SHADER_KEY.to_string();
+    state.shader_key = source_info.shader_key.clone();
     state.resources = RenderPartResources::default();
-    state.profile = CharacterMaterialProfile::from_material(material, CHARACTER_SURFACE_SHADER_KEY);
+    state.profile = CharacterMaterialProfile::from_material(material, &source_info.shader_key);
 
     let Some(scene_asset_path) = &source_info.scene_asset_path else {
         return;
@@ -1008,6 +1086,7 @@ fn sync_character_surface_profile_editor_state(
     };
 
     state.resources = part.resources.clone();
+    state.shader_key = part.shader_key.clone();
     if let Ok(profile) = ron_value_into::<CharacterMaterialProfile>(part.params.clone()) {
         state.profile = profile;
     }
@@ -1020,11 +1099,21 @@ fn save_material_profile(
     material: &ToonMaterial,
     surface_profile_editor_state: &CharacterSurfaceContainerEditorState,
 ) -> String {
-    if profile_registry.get(CHARACTER_SURFACE_SHADER_KEY).is_none() {
-        return format!("未注册的着色器类型: {}", CHARACTER_SURFACE_SHADER_KEY);
+    if profile_registry
+        .get(&surface_profile_editor_state.shader_key)
+        .is_none()
+    {
+        return format!(
+            "未注册的着色器类型: {}",
+            surface_profile_editor_state.shader_key
+        );
     }
     let mut material_profile = surface_profile_editor_state.profile.clone();
     material_profile.toon = crate::npr::toon::ToonMaterialData::from_material(material);
+    material_profile.face_sdf = FaceSdfParamsData::from_runtime(
+        &material.face_sdf,
+        &surface_profile_editor_state.shader_key,
+    );
     let params = match ron_value_from_serializable(&material_profile) {
         Ok(params) => params,
         Err(err) => return err,
@@ -1049,7 +1138,7 @@ fn save_material_profile(
     for source_node in &source_info.source_nodes {
         profile.upsert_part(RenderPartBinding {
             binding_key: source_node.node_name.clone(),
-            shader_key: CHARACTER_SURFACE_SHADER_KEY.to_string(),
+            shader_key: surface_profile_editor_state.shader_key.clone(),
             resources: normalize_render_part_resources(
                 surface_profile_editor_state.resources.clone(),
             ),
@@ -1095,7 +1184,7 @@ fn load_material_profile(
         asset_server,
     )?;
     surface_profile_editor_state.resources = part.resources.clone();
-    surface_profile_editor_state.shader_key = CHARACTER_SURFACE_SHADER_KEY.to_string();
+    surface_profile_editor_state.shader_key = part.shader_key.clone();
     surface_profile_editor_state.profile =
         ron_value_into::<CharacterMaterialProfile>(part.params.clone())?;
     Ok(())
@@ -1103,6 +1192,7 @@ fn load_material_profile(
 
 fn normalize_render_part_resources(mut resources: RenderPartResources) -> RenderPartResources {
     normalize_optional_string(&mut resources.base_color_texture);
+    normalize_optional_string(&mut resources.face_shadow_texture);
     resources
 }
 

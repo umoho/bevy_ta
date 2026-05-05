@@ -15,8 +15,8 @@ use bevy::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::profile::{
-    CHARACTER_SURFACE_SHADER_KEY, CharacterRenderProfile, RenderPartResources,
-    ShaderProfileRegistry,
+    CHARACTER_FACE_SDF_SHADER_KEY, CHARACTER_SURFACE_SHADER_KEY, CharacterRenderProfile,
+    RenderPartResources, ShaderProfileRegistry,
 };
 
 const TOON_SHADER_PATH: &str = "shaders/npr/toon.wgsl";
@@ -27,8 +27,23 @@ pub struct ToonMaterialPlugin;
 
 impl Plugin for ToonMaterialPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MaterialPlugin::<ToonMaterial>::default())
+        app.init_resource::<FaceAnchorAliases>()
+            .add_systems(Update, sync_face_sdf_anchor_data)
+            .add_plugins(MaterialPlugin::<ToonMaterial>::default())
             .add_observer(convert_scene_materials_to_toon);
+    }
+}
+
+#[derive(Resource)]
+struct FaceAnchorAliases {
+    names: Vec<&'static str>,
+}
+
+impl Default for FaceAnchorAliases {
+    fn default() -> Self {
+        Self {
+            names: vec!["頭", "头", "Head", "head"],
+        }
     }
 }
 
@@ -58,6 +73,11 @@ pub struct ToonMaterial {
     pub ramp_texture: Handle<Image>,
     #[uniform(5)]
     pub character_material: CharacterMaterialParams,
+    #[uniform(6)]
+    pub face_sdf: FaceSdfParams,
+    #[texture(7)]
+    #[sampler(8)]
+    pub face_shadow_texture: Option<Handle<Image>>,
     pub ramp_data: RampData,
     pub alpha_mode: AlphaMode,
     pub cull_mode: Option<Face>,
@@ -74,6 +94,8 @@ impl ToonMaterial {
             base_color_texture: None,
             ramp_texture: create_ramp_texture(images, &ramp_data),
             character_material: CharacterMaterialParams::default(),
+            face_sdf: FaceSdfParams::default(),
+            face_shadow_texture: None,
             ramp_data,
             alpha_mode: AlphaMode::Opaque,
             cull_mode: Some(Face::Back),
@@ -104,6 +126,15 @@ impl ToonMaterial {
     ) {
         if resources.base_color_texture.is_some() {
             self.set_base_color_texture_path(asset_server, resources.base_color_texture.as_deref());
+        }
+        if resources.face_shadow_texture.is_some() {
+            self.face_shadow_texture = resources
+                .face_shadow_texture
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(|path| asset_server.load(path.to_string()));
+            self.face_sdf.texture_enabled = u32::from(self.face_shadow_texture.is_some());
         }
     }
 }
@@ -212,6 +243,144 @@ impl Default for CharacterMaterialParams {
             scene_primary: Vec4::new(1.0, 0.35, 0.65, 0.12),
             shading_primary: Vec4::new(0.0, 1.0, 1.0, 0.0),
             shading_secondary: Vec4::new(0.0, 0.0, 0.0, 0.35),
+        }
+    }
+}
+
+#[derive(Reflect, ShaderType, Debug, Clone)]
+pub struct FaceSdfParams {
+    pub enabled: u32,
+    pub texture_enabled: u32,
+    pub uv_mirror_enabled: u32,
+    pub debug_mode: u32,
+    pub shadow_strength: f32,
+    pub blend_weight: f32,
+    pub threshold_bias: f32,
+    pub softness: f32,
+    pub horizontal_scale: f32,
+    pub horizontal_bias: f32,
+    pub vertical_influence: f32,
+    pub backlight_clamp: f32,
+    pub procedural_terminator_softness: f32,
+    pub procedural_vertical_curve: f32,
+    pub reserved0: f32,
+    pub reserved1: f32,
+    pub face_forward: Vec4,
+    pub face_right: Vec4,
+    pub face_up: Vec4,
+}
+
+impl Default for FaceSdfParams {
+    fn default() -> Self {
+        Self {
+            enabled: 0,
+            texture_enabled: 0,
+            uv_mirror_enabled: 1,
+            debug_mode: 0,
+            shadow_strength: 0.85,
+            blend_weight: 1.0,
+            threshold_bias: 0.0,
+            softness: 0.03,
+            horizontal_scale: 1.0,
+            horizontal_bias: 0.0,
+            vertical_influence: 0.15,
+            backlight_clamp: 0.2,
+            procedural_terminator_softness: 0.18,
+            procedural_vertical_curve: 0.25,
+            reserved0: 0.0,
+            reserved1: 0.0,
+            face_forward: Vec4::new(0.0, 0.0, -1.0, 0.0),
+            face_right: Vec4::new(1.0, 0.0, 0.0, 0.0),
+            face_up: Vec4::new(0.0, 1.0, 0.0, 0.0),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FaceSdfParamsData {
+    pub enabled: bool,
+    pub use_texture: bool,
+    pub uv_mirror_enabled: bool,
+    pub debug_mode: u32,
+    pub shadow_strength: f32,
+    pub blend_weight: f32,
+    pub threshold_bias: f32,
+    pub softness: f32,
+    pub horizontal_scale: f32,
+    pub horizontal_bias: f32,
+    pub vertical_influence: f32,
+    pub backlight_clamp: f32,
+    pub procedural_terminator_softness: f32,
+    pub procedural_vertical_curve: f32,
+}
+
+impl FaceSdfParamsData {
+    pub fn from_runtime(params: &FaceSdfParams, shader_key: &str) -> Self {
+        let mut data = Self::default();
+        if shader_key == CHARACTER_FACE_SDF_SHADER_KEY {
+            data.enabled = params.enabled != 0;
+            data.use_texture = params.texture_enabled != 0;
+            data.uv_mirror_enabled = params.uv_mirror_enabled != 0;
+            data.debug_mode = params.debug_mode;
+            data.shadow_strength = params.shadow_strength;
+            data.blend_weight = params.blend_weight;
+            data.threshold_bias = params.threshold_bias;
+            data.softness = params.softness;
+            data.horizontal_scale = params.horizontal_scale;
+            data.horizontal_bias = params.horizontal_bias;
+            data.vertical_influence = params.vertical_influence;
+            data.backlight_clamp = params.backlight_clamp;
+            data.procedural_terminator_softness = params.procedural_terminator_softness;
+            data.procedural_vertical_curve = params.procedural_vertical_curve;
+        }
+        data
+    }
+
+    pub fn clone_for_shader_key(data: &Self, shader_key: &str) -> Self {
+        if shader_key == CHARACTER_FACE_SDF_SHADER_KEY {
+            data.clone()
+        } else {
+            Self::default()
+        }
+    }
+
+    pub fn into_runtime(self) -> FaceSdfParams {
+        let mut params = FaceSdfParams::default();
+        params.enabled = u32::from(self.enabled);
+        params.texture_enabled = u32::from(self.use_texture);
+        params.uv_mirror_enabled = u32::from(self.uv_mirror_enabled);
+        params.debug_mode = self.debug_mode;
+        params.shadow_strength = self.shadow_strength;
+        params.blend_weight = self.blend_weight;
+        params.threshold_bias = self.threshold_bias;
+        params.softness = self.softness;
+        params.horizontal_scale = self.horizontal_scale;
+        params.horizontal_bias = self.horizontal_bias;
+        params.vertical_influence = self.vertical_influence;
+        params.backlight_clamp = self.backlight_clamp;
+        params.procedural_terminator_softness = self.procedural_terminator_softness;
+        params.procedural_vertical_curve = self.procedural_vertical_curve;
+        params
+    }
+}
+
+impl Default for FaceSdfParamsData {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            use_texture: false,
+            uv_mirror_enabled: true,
+            debug_mode: 0,
+            shadow_strength: 0.85,
+            blend_weight: 1.0,
+            threshold_bias: 0.0,
+            softness: 0.03,
+            horizontal_scale: 1.0,
+            horizontal_bias: 0.0,
+            vertical_influence: 0.15,
+            backlight_clamp: 0.2,
+            procedural_terminator_softness: 0.18,
+            procedural_vertical_curve: 0.25,
         }
     }
 }
@@ -554,6 +723,42 @@ fn sample_ramp_color(ramp_data: &RampData, position: f32) -> LinearRgba {
     last_stop.color
 }
 
+fn sync_face_sdf_anchor_data(
+    aliases: Res<FaceAnchorAliases>,
+    node_transforms: Query<(&Name, &GlobalTransform)>,
+    face_material_meshes: Query<(&MeshMaterial3d<ToonMaterial>, &ToonMaterialBindingSource)>,
+    mut materials: ResMut<Assets<ToonMaterial>>,
+) {
+    let Some((_, anchor_transform)) = node_transforms.iter().find(|(name, _)| {
+        aliases
+            .names
+            .iter()
+            .any(|alias| name.as_str().eq_ignore_ascii_case(alias) || name.as_str() == *alias)
+    }) else {
+        return;
+    };
+
+    let rotation = anchor_transform.rotation();
+    let face_forward = (rotation * -Vec3::Z).normalize_or_zero();
+    let face_right = (rotation * Vec3::X).normalize_or_zero();
+    let face_up = (rotation * Vec3::Y).normalize_or_zero();
+    if face_forward == Vec3::ZERO || face_right == Vec3::ZERO || face_up == Vec3::ZERO {
+        return;
+    }
+
+    for (material_handle, binding_source) in &face_material_meshes {
+        if binding_source.shader_key != CHARACTER_FACE_SDF_SHADER_KEY {
+            continue;
+        }
+        let Some(material) = materials.get_mut(material_handle.id()) else {
+            continue;
+        };
+        material.face_sdf.face_forward = face_forward.extend(0.0);
+        material.face_sdf.face_right = face_right.extend(0.0);
+        material.face_sdf.face_up = face_up.extend(0.0);
+    }
+}
+
 fn convert_scene_materials_to_toon(
     scene_ready: On<SceneInstanceReady>,
     mut commands: Commands,
@@ -602,13 +807,18 @@ fn convert_scene_materials_to_toon(
             .and_then(|profile| profile.find_part(&node_name))
         {
             if let Some(handler) = profile_registry.get(&part.shader_key) {
-                let _ = handler.apply_to_toon_material(
+                if let Err(err) = handler.apply_to_toon_material(
                     &part.params,
                     &part.resources,
                     &mut toon_material,
                     &mut images,
                     &asset_server,
-                );
+                ) {
+                    warn!(
+                        "failed to apply toon profile for node `{}` shader `{}`: {}",
+                        node_name, part.shader_key, err
+                    );
+                }
             }
         }
 
