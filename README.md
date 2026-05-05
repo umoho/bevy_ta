@@ -33,6 +33,12 @@ Codex 通过项目内 `.codex/config.toml` 自动加载 `bevy-brp` MCP server。
 - `bevy_ta::mcp::McpCapturePrimaryWindow`: 保存主窗口截图，参数为 `{ "path": "assets/private/captures/capture.png" }`。
 - `bevy_ta::mcp::McpSetToonParam`: 按 `entity`、`node_name` 或 `apply_all` 修改 Toon shader 参数。参数包含 `field`、`apply_all`，并且在 `number`、`boolean`、`vec4` 中只传一个值。
 - `bevy_ta::mcp::McpSaveToonProfile`: 把当前 Toon 材质参数保存到 `.toon-model.ron`。默认根据 `BEVY_TA_CHARACTER_SCENE` 对应的 scene asset 路径推导 profile 路径，也可以显式传 `path`。
+- `bevy_ta::mcp::debug_camera::McpCreateDebugCamera`: 新建一个调试摄像机，渲染到独立 offscreen image，不影响主窗口和 UI。
+- `bevy_ta::mcp::debug_camera::McpSetDebugCamera`: 按 `name` 或 `entity` 修改调试摄像机的位置、目标点、分辨率或启用状态。
+- `bevy_ta::mcp::debug_camera::McpCaptureDebugCamera`: 保存指定调试摄像机的 offscreen 画面。
+- `bevy_ta::mcp::debug_camera::McpDeleteDebugCamera`: 删除一个或全部调试摄像机；删除会延迟几帧清理，避免渲染线程仍引用 view。
+
+调试摄像机查询使用标准 `world_query`，过滤 `bevy_ta::mcp::debug_camera::McpDebugCamera` 组件即可。
 
 真实资产调试建议在有桌面/GPU 的终端中启动 app，Codex 只通过 BRP 连接已运行进程。`scripts/bevy_ta_brp` 默认使用 release 构建，并透传 app 使用的环境变量：
 

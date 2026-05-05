@@ -28,6 +28,8 @@ use crate::{
     },
 };
 
+mod debug_camera;
+
 const BRP_PORT_ENV: &str = "BRP_EXTRAS_PORT";
 const SCREENSHOT_DIR_ENV: &str = "BEVY_TA_CAPTURE_DIR";
 const DEFAULT_CAPTURE_DIR: &str = "assets/private/captures";
@@ -44,12 +46,27 @@ impl Plugin for McpDebugPlugin {
             .register_type::<McpSetOrbitCamera>()
             .register_type::<McpSetToonParam>()
             .register_type::<McpSaveToonProfile>()
+            .register_type::<debug_camera::McpDebugCamera>()
+            .register_type::<debug_camera::McpCreateDebugCamera>()
+            .register_type::<debug_camera::McpSetDebugCamera>()
+            .register_type::<debug_camera::McpCaptureDebugCamera>()
+            .register_type::<debug_camera::McpDeleteDebugCamera>()
             .add_systems(Startup, log_mcp_usage)
-            .add_systems(Update, capture_screenshot_on_hotkey)
+            .add_systems(
+                Update,
+                (
+                    capture_screenshot_on_hotkey,
+                    debug_camera::cleanup_deleted_debug_cameras,
+                ),
+            )
             .add_observer(handle_mcp_capture_primary_window)
             .add_observer(handle_mcp_set_orbit_camera)
             .add_observer(handle_mcp_set_toon_param)
-            .add_observer(handle_mcp_save_toon_profile);
+            .add_observer(handle_mcp_save_toon_profile)
+            .add_observer(debug_camera::handle_create_debug_camera)
+            .add_observer(debug_camera::handle_set_debug_camera)
+            .add_observer(debug_camera::handle_capture_debug_camera)
+            .add_observer(debug_camera::handle_delete_debug_camera);
 
         register_mcp_methods(app.world_mut());
     }
