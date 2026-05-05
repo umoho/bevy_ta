@@ -33,8 +33,14 @@ impl Plugin for McpDebugPlugin {
         let port = effective_brp_port();
         app.add_plugins(BrpExtrasPlugin::with_port(port))
             .init_resource::<CaptureCounter>()
+            .register_type::<McpCapturePrimaryWindow>()
+            .register_type::<McpSetOrbitCamera>()
+            .register_type::<McpSetToonParam>()
             .add_systems(Startup, log_mcp_usage)
-            .add_systems(Update, capture_screenshot_on_hotkey);
+            .add_systems(Update, capture_screenshot_on_hotkey)
+            .add_observer(handle_mcp_capture_primary_window)
+            .add_observer(handle_mcp_set_orbit_camera)
+            .add_observer(handle_mcp_set_toon_param);
 
         register_mcp_methods(app.world_mut());
     }
@@ -42,6 +48,35 @@ impl Plugin for McpDebugPlugin {
 
 #[derive(Resource, Default)]
 struct CaptureCounter(u32);
+
+#[derive(Event, Reflect, Debug, Clone)]
+#[reflect(Event)]
+pub struct McpCapturePrimaryWindow {
+    pub path: String,
+}
+
+#[derive(Event, Reflect, Debug, Clone)]
+#[reflect(Event)]
+pub struct McpSetOrbitCamera {
+    pub entity: Option<u64>,
+    pub name: Option<String>,
+    pub target: Option<[f32; 3]>,
+    pub distance: Option<f32>,
+    pub yaw: Option<f32>,
+    pub pitch: Option<f32>,
+}
+
+#[derive(Event, Reflect, Debug, Clone)]
+#[reflect(Event)]
+pub struct McpSetToonParam {
+    pub entity: Option<u64>,
+    pub node_name: Option<String>,
+    pub field: String,
+    pub number: Option<f32>,
+    pub boolean: Option<bool>,
+    pub vec4: Option<[f32; 4]>,
+    pub apply_all: bool,
+}
 
 fn register_mcp_methods(world: &mut World) {
     let methods = [
@@ -118,6 +153,13 @@ fn capture_primary_window_handler(
     }))
 }
 
+fn handle_mcp_capture_primary_window(event: On<McpCapturePrimaryWindow>, mut commands: Commands) {
+    match absolute_path(&event.path) {
+        Ok(path) => spawn_primary_window_screenshot(&mut commands, path),
+        Err(error) => error!("MCP screenshot event failed: {}", error.message),
+    }
+}
+
 fn spawn_primary_window_screenshot(commands: &mut Commands, path: PathBuf) {
     if let Some(parent) = path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
@@ -184,24 +226,14 @@ fn set_orbit_camera_handler(In(params): In<Option<Value>>, world: &mut World) ->
             continue;
         }
 
-        if let Some(target) = params.target {
-            orbit.target = Vec3::from_array(target);
-        }
-        if let Some(distance) = params.distance {
-            ensure_finite_positive("distance", distance)?;
-            orbit.distance = distance;
-        }
-        if let Some(yaw) = params.yaw {
-            ensure_finite("yaw", yaw)?;
-            orbit.yaw = yaw;
-        }
-        if let Some(pitch) = params.pitch {
-            ensure_finite("pitch", pitch)?;
-            orbit.pitch = pitch;
-        }
-        orbit.orbit_velocity = Vec2::ZERO;
-        orbit.zoom_velocity = 0.0;
-        orbit.apply_to_transform(&mut transform);
+        apply_orbit_camera_update(
+            &mut orbit,
+            &mut transform,
+            params.target,
+            params.distance,
+            params.yaw,
+            params.pitch,
+        )?;
 
         return Ok(json!({
             "success": true,
@@ -220,6 +252,77 @@ fn set_orbit_camera_handler(In(params): In<Option<Value>>, world: &mut World) ->
     Err(invalid_params(
         "No matching orbit camera found. Pass `entity`, `name`, or omit both to use the first orbit camera.",
     ))
+}
+
+fn handle_mcp_set_orbit_camera(
+    event: On<McpSetOrbitCamera>,
+    mut cameras: Query<(Entity, Option<&Name>, &mut Transform, &mut OrbitCamera)>,
+) {
+    let target_entity = match event.entity.map(parse_entity_bits).transpose() {
+        Ok(entity) => entity,
+        Err(error) => {
+            error!("MCP set orbit camera event failed: {}", error.message);
+            return;
+        }
+    };
+
+    for (entity, name, mut transform, mut orbit) in &mut cameras {
+        if !camera_matches(entity, name, target_entity, event.name.as_deref()) {
+            continue;
+        }
+
+        match apply_orbit_camera_update(
+            &mut orbit,
+            &mut transform,
+            event.target,
+            event.distance,
+            event.yaw,
+            event.pitch,
+        ) {
+            Ok(()) => info!(
+                "MCP set orbit camera entity={} target={:?} distance={} yaw={} pitch={}",
+                entity.to_bits(),
+                orbit.target,
+                orbit.distance,
+                orbit.yaw,
+                orbit.pitch
+            ),
+            Err(error) => error!("MCP set orbit camera event failed: {}", error.message),
+        }
+        return;
+    }
+
+    error!("MCP set orbit camera event failed: no matching orbit camera found");
+}
+
+fn apply_orbit_camera_update(
+    orbit: &mut OrbitCamera,
+    transform: &mut Transform,
+    target: Option<[f32; 3]>,
+    distance: Option<f32>,
+    yaw: Option<f32>,
+    pitch: Option<f32>,
+) -> BrpResult<()> {
+    if let Some(target) = target {
+        orbit.target = Vec3::from_array(target);
+    }
+    if let Some(distance) = distance {
+        ensure_finite_positive("distance", distance)?;
+        orbit.distance = distance;
+    }
+    if let Some(yaw) = yaw {
+        ensure_finite("yaw", yaw)?;
+        orbit.yaw = yaw;
+    }
+    if let Some(pitch) = pitch {
+        ensure_finite("pitch", pitch)?;
+        orbit.pitch = pitch;
+    }
+    orbit.orbit_velocity = Vec2::ZERO;
+    orbit.zoom_velocity = 0.0;
+    orbit.apply_to_transform(transform);
+
+    Ok(())
 }
 
 fn list_toon_materials_handler(In(_params): In<Option<Value>>, world: &mut World) -> BrpResult {
@@ -330,6 +433,90 @@ fn set_toon_param_handler(In(params): In<Option<Value>>, world: &mut World) -> B
         "field": params.field,
         "changed_count": changed,
     }))
+}
+
+fn handle_mcp_set_toon_param(
+    event: On<McpSetToonParam>,
+    query: Query<(
+        Entity,
+        &MeshMaterial3d<ToonMaterial>,
+        Option<&ToonMaterialBindingSource>,
+    )>,
+    mut materials: ResMut<Assets<ToonMaterial>>,
+) {
+    let target_entity = match event.entity.map(parse_entity_bits).transpose() {
+        Ok(entity) => entity,
+        Err(error) => {
+            error!("MCP set toon param event failed: {}", error.message);
+            return;
+        }
+    };
+
+    let Some(value) = toon_event_value(&event) else {
+        error!("MCP set toon param event failed: pass exactly one of number, boolean, or vec4");
+        return;
+    };
+
+    let target_ids = query
+        .iter()
+        .filter_map(|(entity, handle, source)| {
+            let matches_entity = target_entity.is_none_or(|target| target == entity);
+            let matches_node = event
+                .node_name
+                .as_deref()
+                .is_none_or(|target| source.is_some_and(|source| source.node_name == target));
+            let should_apply = event.apply_all
+                || event.entity.is_some()
+                || event.node_name.is_some()
+                || (target_entity.is_none() && event.node_name.is_none());
+
+            if should_apply && matches_entity && matches_node {
+                Some(handle.id())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if target_ids.is_empty() {
+        error!("MCP set toon param event failed: no matching ToonMaterial found");
+        return;
+    }
+
+    let mut changed = 0usize;
+    for id in target_ids {
+        if let Some(material) = materials.get_mut(id) {
+            match set_toon_field(material, &event.field, &value) {
+                Ok(()) => changed += 1,
+                Err(error) => {
+                    error!("MCP set toon param event failed: {error}");
+                    return;
+                }
+            }
+        }
+    }
+
+    info!(
+        "MCP set toon param field={} changed_count={}",
+        event.field, changed
+    );
+}
+
+fn toon_event_value(event: &McpSetToonParam) -> Option<Value> {
+    let provided_count = usize::from(event.number.is_some())
+        + usize::from(event.boolean.is_some())
+        + usize::from(event.vec4.is_some());
+    if provided_count != 1 {
+        return None;
+    }
+
+    if let Some(value) = event.number {
+        Some(json!(value))
+    } else if let Some(value) = event.boolean {
+        Some(json!(value))
+    } else {
+        event.vec4.map(|value| json!(value))
+    }
 }
 
 fn set_toon_field(material: &mut ToonMaterial, field: &str, value: &Value) -> Result<(), String> {

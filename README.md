@@ -23,7 +23,15 @@ cargo run --example npr_toon_ramp
 
 ## MCP/BRP 调试
 
-启用 `brp_tools` feature 后，app 会在 `127.0.0.1:15702` 开启 Bevy Remote Protocol，并注册项目专用方法。Codex 可以通过 `bevy_brp_mcp` 的 `brp_execute` 调用这些方法，也可以直接用 JSON-RPC 调试。
+启用 `brp_tools` feature 后，app 会在 `127.0.0.1:15702` 开启 Bevy Remote Protocol，并注册项目专用调试入口。
+
+Codex 通过项目内 `.codex/config.toml` 自动加载 `bevy-brp` MCP server。当前 `bevy_brp_mcp` 的 `brp_execute` 只支持内置 BRP method；Codex 调项目专用能力时应使用标准 `world_trigger_event`：
+
+- `bevy_ta::mcp::McpSetOrbitCamera`: 按 `name` 或 `entity` 设置 `target`、`distance`、`yaw`、`pitch`。
+- `bevy_ta::mcp::McpCapturePrimaryWindow`: 保存主窗口截图，参数为 `{ "path": "assets/private/captures/capture.png" }`。
+- `bevy_ta::mcp::McpSetToonParam`: 按 `entity`、`node_name` 或 `apply_all` 修改 Toon shader 参数。参数包含 `field`、`apply_all`，并且在 `number`、`boolean`、`vec4` 中只传一个值。
+
+直接用 JSON-RPC/curl 调试时，也可以调用项目自定义 BRP method：
 
 - `bevy_ta/list_cameras`: 列出相机和 orbit 参数。
 - `bevy_ta/set_orbit_camera`: 按 `name` 或 `entity` 设置 `target`、`distance`、`yaw`、`pitch`。

@@ -1,0 +1,10 @@
+[mcp_servers.bevy-brp]
+command = "./scripts/bevy_brp_mcp"
+startup_timeout_sec = 120
+tool_timeout_sec = 30
+
+[mcp_servers.bevy-brp.tools.world_trigger_event]
+approval_mode = "approve"
+
+[mcp_servers.bevy-brp.tools.brp_extras_screenshot]
+approval_mode = "approve"
