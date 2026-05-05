@@ -17,6 +17,8 @@
 ```sh
 cargo run
 cargo run --features brp_tools
+cargo run --release --features brp_tools
+scripts/bevy_ta_brp
 cargo run --features inspector
 cargo run --example npr_toon_ramp
 ```
@@ -30,6 +32,16 @@ Codex 通过项目内 `.codex/config.toml` 自动加载 `bevy-brp` MCP server。
 - `bevy_ta::mcp::McpSetOrbitCamera`: 按 `name` 或 `entity` 设置 `target`、`distance`、`yaw`、`pitch`。
 - `bevy_ta::mcp::McpCapturePrimaryWindow`: 保存主窗口截图，参数为 `{ "path": "assets/private/captures/capture.png" }`。
 - `bevy_ta::mcp::McpSetToonParam`: 按 `entity`、`node_name` 或 `apply_all` 修改 Toon shader 参数。参数包含 `field`、`apply_all`，并且在 `number`、`boolean`、`vec4` 中只传一个值。
+- `bevy_ta::mcp::McpSaveToonProfile`: 把当前 Toon 材质参数保存到 `.toon-model.ron`。默认根据 `BEVY_TA_CHARACTER_SCENE` 对应的 scene asset 路径推导 profile 路径，也可以显式传 `path`。
+
+真实资产调试建议在有桌面/GPU 的终端中启动 app，Codex 只通过 BRP 连接已运行进程。`scripts/bevy_ta_brp` 默认使用 release 构建，并透传 app 使用的环境变量：
+
+```sh
+BEVY_TA_CHARACTER_SCENE='private/character_source/角色/角色.glb#Scene0' \
+BEVY_TA_CHARACTER_SCALE=5 \
+BRP_EXTRAS_PORT=15702 \
+scripts/bevy_ta_brp
+```
 
 直接用 JSON-RPC/curl 调试时，也可以调用项目自定义 BRP method：
 

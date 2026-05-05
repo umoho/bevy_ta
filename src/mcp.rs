@@ -18,7 +18,14 @@ use serde_json::{Value, json};
 
 use crate::{
     app::OrbitCamera,
-    npr::toon::{ToonMaterial, ToonMaterialBindingSource, ToonParamsData},
+    npr::{
+        profile::{
+            CHARACTER_SURFACE_SHADER_KEY, CharacterMaterialProfile, CharacterRenderProfile,
+            ModelBinding, PROFILE_VERSION, RenderPartBinding, RenderPartResources,
+            character_render_profile_path, ron_value_from_serializable, ron_value_into,
+        },
+        toon::{ToonMaterial, ToonMaterialBindingSource, ToonMaterialData, ToonParamsData},
+    },
 };
 
 const BRP_PORT_ENV: &str = "BRP_EXTRAS_PORT";
@@ -36,11 +43,13 @@ impl Plugin for McpDebugPlugin {
             .register_type::<McpCapturePrimaryWindow>()
             .register_type::<McpSetOrbitCamera>()
             .register_type::<McpSetToonParam>()
+            .register_type::<McpSaveToonProfile>()
             .add_systems(Startup, log_mcp_usage)
             .add_systems(Update, capture_screenshot_on_hotkey)
             .add_observer(handle_mcp_capture_primary_window)
             .add_observer(handle_mcp_set_orbit_camera)
-            .add_observer(handle_mcp_set_toon_param);
+            .add_observer(handle_mcp_set_toon_param)
+            .add_observer(handle_mcp_save_toon_profile);
 
         register_mcp_methods(app.world_mut());
     }
@@ -75,6 +84,15 @@ pub struct McpSetToonParam {
     pub number: Option<f32>,
     pub boolean: Option<bool>,
     pub vec4: Option<[f32; 4]>,
+    pub apply_all: bool,
+}
+
+#[derive(Event, Reflect, Debug, Clone)]
+#[reflect(Event)]
+pub struct McpSaveToonProfile {
+    pub entity: Option<u64>,
+    pub node_name: Option<String>,
+    pub path: Option<String>,
     pub apply_all: bool,
 }
 
@@ -500,6 +518,160 @@ fn handle_mcp_set_toon_param(
         "MCP set toon param field={} changed_count={}",
         event.field, changed
     );
+}
+
+fn handle_mcp_save_toon_profile(
+    event: On<McpSaveToonProfile>,
+    query: Query<(
+        Entity,
+        &MeshMaterial3d<ToonMaterial>,
+        Option<&ToonMaterialBindingSource>,
+    )>,
+    materials: Res<Assets<ToonMaterial>>,
+) {
+    let target_entity = match event.entity.map(parse_entity_bits).transpose() {
+        Ok(entity) => entity,
+        Err(error) => {
+            error!("MCP save toon profile event failed: {}", error.message);
+            return;
+        }
+    };
+
+    let mut saved_count = 0usize;
+    for (entity, handle, source) in &query {
+        if !toon_source_matches(
+            entity,
+            source,
+            target_entity,
+            event.node_name.as_deref(),
+            event.apply_all,
+        ) {
+            continue;
+        }
+
+        let Some(material) = materials.get(handle) else {
+            continue;
+        };
+        let Some(source) = source else {
+            continue;
+        };
+
+        let path = match toon_profile_save_path(event.path.as_deref(), source) {
+            Ok(path) => path,
+            Err(error) => {
+                error!("MCP save toon profile event failed: {error}");
+                return;
+            }
+        };
+
+        match save_toon_material_profile(&path, source, material) {
+            Ok(()) => {
+                saved_count += 1;
+                info!(
+                    "MCP saved toon profile entity={} node={} path={}",
+                    entity.to_bits(),
+                    source.node_name,
+                    path.display()
+                );
+            }
+            Err(error) => {
+                error!("MCP save toon profile event failed: {error}");
+                return;
+            }
+        }
+    }
+
+    if saved_count == 0 {
+        error!("MCP save toon profile event failed: no matching ToonMaterial found");
+    } else {
+        info!("MCP save toon profile completed saved_count={saved_count}");
+    }
+}
+
+fn toon_source_matches(
+    entity: Entity,
+    source: Option<&ToonMaterialBindingSource>,
+    target_entity: Option<Entity>,
+    target_node_name: Option<&str>,
+    apply_all: bool,
+) -> bool {
+    let matches_entity = target_entity.is_none_or(|target| target == entity);
+    let matches_node = target_node_name
+        .is_none_or(|target| source.is_some_and(|source| source.node_name == target));
+    let should_apply = apply_all || target_entity.is_some() || target_node_name.is_some();
+
+    should_apply && matches_entity && matches_node
+}
+
+fn toon_profile_save_path(
+    explicit_path: Option<&str>,
+    source: &ToonMaterialBindingSource,
+) -> Result<PathBuf, String> {
+    if let Some(path) = explicit_path.map(str::trim).filter(|path| !path.is_empty()) {
+        return absolute_path(path).map_err(|error| error.message);
+    }
+
+    let Some(scene_asset_path) = &source.scene_asset_path else {
+        return Err(
+            "missing scene_asset_path; pass `path` or use a material loaded from a scene"
+                .to_string(),
+        );
+    };
+
+    absolute_path(&character_render_profile_path(scene_asset_path).to_string_lossy())
+        .map_err(|error| error.message)
+}
+
+fn save_toon_material_profile(
+    path: &Path,
+    source: &ToonMaterialBindingSource,
+    material: &ToonMaterial,
+) -> Result<(), String> {
+    let mut profile =
+        CharacterRenderProfile::load_from_path(path).unwrap_or_else(|_| CharacterRenderProfile {
+            version: PROFILE_VERSION,
+            model_binding: ModelBinding {
+                scene_asset_path: source.scene_asset_path.clone(),
+            },
+            shared: Default::default(),
+            parts: Vec::new(),
+        });
+    profile.version = PROFILE_VERSION;
+    if source.scene_asset_path.is_some() {
+        profile.model_binding.scene_asset_path = source.scene_asset_path.clone();
+    }
+
+    let existing_part = profile.find_part(&source.node_name).cloned();
+    let resources = existing_part
+        .as_ref()
+        .map(|part| part.resources.clone())
+        .unwrap_or_else(RenderPartResources::default);
+    let params = capture_character_surface_profile(existing_part.as_ref(), material)?;
+
+    profile.upsert_part(RenderPartBinding {
+        binding_key: source.node_name.clone(),
+        shader_key: if source.shader_key.is_empty() {
+            CHARACTER_SURFACE_SHADER_KEY.to_string()
+        } else {
+            source.shader_key.clone()
+        },
+        resources,
+        params,
+    });
+    profile.save_to_path(path)
+}
+
+fn capture_character_surface_profile(
+    existing_part: Option<&RenderPartBinding>,
+    material: &ToonMaterial,
+) -> Result<ron::value::Value, String> {
+    let mut profile = existing_part
+        .and_then(|part| ron_value_into::<CharacterMaterialProfile>(part.params.clone()).ok())
+        .unwrap_or_else(|| {
+            CharacterMaterialProfile::from_material(material, CHARACTER_SURFACE_SHADER_KEY)
+        });
+    profile.toon = ToonMaterialData::from_material(material);
+    ron_value_from_serializable(&profile)
 }
 
 fn toon_event_value(event: &McpSetToonParam) -> Option<Value> {

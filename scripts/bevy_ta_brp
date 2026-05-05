@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${REPO_ROOT}"
+
+export BRP_EXTRAS_PORT="${BRP_EXTRAS_PORT:-15702}"
+
+PROFILE="${BEVY_TA_CARGO_PROFILE:-release}"
+if [[ "${PROFILE}" == "release" ]]; then
+  exec cargo run --release --features brp_tools
+fi
+
+exec cargo run --profile "${PROFILE}" --features brp_tools

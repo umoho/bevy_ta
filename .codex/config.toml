@@ -8,3 +8,9 @@ approval_mode = "approve"
 
 [mcp_servers.bevy-brp.tools.brp_extras_screenshot]
 approval_mode = "approve"
+
+[mcp_servers.bevy-brp.tools.brp_execute]
+approval_mode = "approve"
+
+[mcp_servers.bevy-brp.tools.brp_shutdown]
+approval_mode = "approve"
