@@ -1594,9 +1594,11 @@ dependencies = [
  "bevy_brp_extras",
  "bevy_egui",
  "bevy_material_preview",
+ "bevy_remote",
  "egui-chinese-font",
  "ron 0.10.1",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

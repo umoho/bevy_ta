@@ -1,7 +1,7 @@
 pub mod animation;
 pub mod app;
 #[cfg(feature = "brp_tools")]
-pub mod brp_tools;
+pub mod mcp;
 pub mod npr;
 pub mod showcase;
 pub mod ui;

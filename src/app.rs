@@ -34,7 +34,7 @@ pub fn run() {
     #[cfg(feature = "dev_ui")]
     app.add_plugins(crate::ui::MaterialEditorPlugin);
     #[cfg(feature = "brp_tools")]
-    app.add_plugins(crate::brp_tools::BrpToolsPlugin);
+    app.add_plugins(crate::mcp::McpDebugPlugin);
 
     app.run();
 }
@@ -159,13 +159,21 @@ fn spawn_placeholder_character(
 }
 
 #[derive(Component)]
-struct OrbitCamera {
-    target: Vec3,
-    distance: f32,
-    yaw: f32,
-    pitch: f32,
-    orbit_velocity: Vec2,
-    zoom_velocity: f32,
+pub(crate) struct OrbitCamera {
+    pub(crate) target: Vec3,
+    pub(crate) distance: f32,
+    pub(crate) yaw: f32,
+    pub(crate) pitch: f32,
+    pub(crate) orbit_velocity: Vec2,
+    pub(crate) zoom_velocity: f32,
+}
+
+impl OrbitCamera {
+    pub(crate) fn apply_to_transform(&self, transform: &mut Transform) {
+        let rotation = Quat::from_euler(EulerRot::YXZ, self.yaw, self.pitch, 0.0);
+        transform.translation = self.target + rotation * Vec3::new(0.0, 0.0, self.distance);
+        transform.look_at(self.target, Vec3::Y);
+    }
 }
 
 #[derive(Resource)]
@@ -242,9 +250,7 @@ fn orbit_camera(
         orbit.orbit_velocity *= drag;
         orbit.zoom_velocity *= drag;
 
-        let rotation = Quat::from_euler(EulerRot::YXZ, orbit.yaw, orbit.pitch, 0.0);
-        transform.translation = orbit.target + rotation * Vec3::new(0.0, 0.0, orbit.distance);
-        transform.look_at(orbit.target, Vec3::Y);
+        orbit.apply_to_transform(&mut transform);
     }
 }
 

@@ -16,6 +16,17 @@
 
 ```sh
 cargo run
+cargo run --features brp_tools
 cargo run --features inspector
 cargo run --example npr_toon_ramp
 ```
+
+## MCP/BRP 调试
+
+启用 `brp_tools` feature 后，app 会在 `127.0.0.1:15702` 开启 Bevy Remote Protocol，并注册项目专用方法。Codex 可以通过 `bevy_brp_mcp` 的 `brp_execute` 调用这些方法，也可以直接用 JSON-RPC 调试。
+
+- `bevy_ta/list_cameras`: 列出相机和 orbit 参数。
+- `bevy_ta/set_orbit_camera`: 按 `name` 或 `entity` 设置 `target`、`distance`、`yaw`、`pitch`。
+- `bevy_ta/capture_primary_window`: 保存主窗口截图，参数为 `{ "path": "assets/private/captures/capture.png" }`。
+- `bevy_ta/list_toon_materials`: 列出场景中的 `ToonMaterial` 参数。
+- `bevy_ta/set_toon_param`: 按 `entity`、`node_name` 或 `apply_all` 修改 Toon shader 参数，例如 `{ "field": "rim_strength", "value": 1.2, "apply_all": true }`。
