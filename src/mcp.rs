@@ -58,14 +58,14 @@ impl Plugin for McpDebugPlugin {
 #[derive(Resource, Default)]
 struct CaptureCounter(u32);
 
-#[derive(Event, Reflect, Debug, Clone)]
-#[reflect(Event)]
+#[derive(Event, Reflect, Debug, Clone, Default)]
+#[reflect(Event, Default)]
 pub struct McpCapturePrimaryWindow {
     pub path: String,
 }
 
-#[derive(Event, Reflect, Debug, Clone)]
-#[reflect(Event)]
+#[derive(Event, Reflect, Debug, Clone, Default)]
+#[reflect(Event, Default)]
 pub struct McpSetOrbitCamera {
     pub entity: Option<u64>,
     pub name: Option<String>,
@@ -75,8 +75,8 @@ pub struct McpSetOrbitCamera {
     pub pitch: Option<f32>,
 }
 
-#[derive(Event, Reflect, Debug, Clone)]
-#[reflect(Event)]
+#[derive(Event, Reflect, Debug, Clone, Default)]
+#[reflect(Event, Default)]
 pub struct McpSetToonParam {
     pub entity: Option<u64>,
     pub node_name: Option<String>,
@@ -87,8 +87,8 @@ pub struct McpSetToonParam {
     pub apply_all: bool,
 }
 
-#[derive(Event, Reflect, Debug, Clone)]
-#[reflect(Event)]
+#[derive(Event, Reflect, Debug, Clone, Default)]
+#[reflect(Event, Default)]
 pub struct McpSaveToonProfile {
     pub entity: Option<u64>,
     pub node_name: Option<String>,
