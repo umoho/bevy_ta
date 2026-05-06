@@ -7,6 +7,7 @@ use bevy::{
 #[cfg(feature = "dev_ui")]
 use bevy_egui::input::EguiWantsInput;
 
+use crate::lighting::LightingPlugin;
 use crate::npr::{
     NprPlugin,
     toon::{ToonMaterial, ToonMaterialTarget, ToonModelBindingAssetPath},
@@ -19,6 +20,7 @@ const DEFAULT_PRIVATE_SCENE_SCALE: f32 = 5.0;
 pub fn run() {
     let mut app = App::new();
     app.init_resource::<OrbitCameraSettings>()
+        .add_plugins(LightingPlugin)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Bevy TA NPR".into(),
@@ -32,7 +34,10 @@ pub fn run() {
         .add_systems(Update, (orbit_camera, toggle_outline));
 
     #[cfg(feature = "dev_ui")]
-    app.add_plugins(crate::ui::MaterialEditorPlugin);
+    app.add_plugins((
+        crate::lighting::LightingEditorPlugin,
+        crate::ui::MaterialEditorPlugin,
+    ));
     #[cfg(feature = "brp_tools")]
     app.add_plugins(crate::mcp::McpDebugPlugin);
 
@@ -52,15 +57,6 @@ fn setup(
         brightness: 1.0,
         affects_lightmapped_meshes: true,
     });
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 18_000.0,
-            shadows_enabled: true,
-            ..Default::default()
-        },
-        Transform::from_xyz(-3.0, 5.0, 4.0).looking_at(Vec3::new(0.0, 1.2, 0.0), Vec3::Y),
-    ));
 
     commands.spawn((
         Mesh3d(meshes.add(Circle::new(3.5))),
