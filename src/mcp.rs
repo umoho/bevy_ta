@@ -16,24 +16,15 @@ use bevy_remote::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{
-    app::OrbitCamera,
-    npr::{
-        profile::{
-            CHARACTER_SURFACE_SHADER_KEY, CharacterMaterialProfile, CharacterRenderProfile,
-            ModelBinding, PROFILE_VERSION, RenderPartBinding, RenderPartResources,
-            character_render_profile_path, ron_value_from_serializable, ron_value_into,
-        },
-        toon::{ToonMaterial, ToonMaterialBindingSource, ToonMaterialData, ToonParamsData},
-    },
-};
+use crate::app::OrbitCamera;
 
 mod debug_camera;
+mod material;
 
 const BRP_PORT_ENV: &str = "BRP_EXTRAS_PORT";
 const SCREENSHOT_DIR_ENV: &str = "BEVY_TA_CAPTURE_DIR";
 const DEFAULT_CAPTURE_DIR: &str = "assets/private/captures";
-const METHOD_PREFIX: &str = "bevy_ta/";
+pub(crate) const METHOD_PREFIX: &str = "bevy_ta/";
 
 pub struct McpDebugPlugin;
 
@@ -44,7 +35,7 @@ impl Plugin for McpDebugPlugin {
             .init_resource::<CaptureCounter>()
             .register_type::<McpCapturePrimaryWindow>()
             .register_type::<McpSetOrbitCamera>()
-            .register_type::<McpSetToonParam>()
+            .register_type::<McpSetMaterialParam>()
             .register_type::<McpSaveToonProfile>()
             .register_type::<debug_camera::McpDebugCamera>()
             .register_type::<debug_camera::McpCreateDebugCamera>()
@@ -61,8 +52,8 @@ impl Plugin for McpDebugPlugin {
             )
             .add_observer(handle_mcp_capture_primary_window)
             .add_observer(handle_mcp_set_orbit_camera)
-            .add_observer(handle_mcp_set_toon_param)
-            .add_observer(handle_mcp_save_toon_profile)
+            .add_observer(material::handle_mcp_set_material_param)
+            .add_observer(material::handle_mcp_save_toon_profile)
             .add_observer(debug_camera::handle_create_debug_camera)
             .add_observer(debug_camera::handle_set_debug_camera)
             .add_observer(debug_camera::handle_capture_debug_camera)
@@ -92,11 +83,13 @@ pub struct McpSetOrbitCamera {
     pub pitch: Option<f32>,
 }
 
+/// 通过字段路径修改运行时材质参数。
 #[derive(Event, Reflect, Debug, Clone, Default)]
 #[reflect(Event, Default)]
-pub struct McpSetToonParam {
+pub struct McpSetMaterialParam {
     pub entity: Option<u64>,
     pub node_name: Option<String>,
+    pub shader_key: Option<String>,
     pub field: String,
     pub number: Option<f32>,
     pub boolean: Option<bool>,
@@ -104,6 +97,7 @@ pub struct McpSetToonParam {
     pub apply_all: bool,
 }
 
+/// 将当前运行时材质参数保存到 `.toon-model.ron`。
 #[derive(Event, Reflect, Debug, Clone, Default)]
 #[reflect(Event, Default)]
 pub struct McpSaveToonProfile {
@@ -124,14 +118,6 @@ fn register_mcp_methods(world: &mut World) {
             "set_orbit_camera",
             world.register_system(set_orbit_camera_handler),
         ),
-        (
-            "list_toon_materials",
-            world.register_system(list_toon_materials_handler),
-        ),
-        (
-            "set_toon_param",
-            world.register_system(set_toon_param_handler),
-        ),
     ];
 
     let mut remote_methods = world.resource_mut::<RemoteMethods>();
@@ -141,6 +127,7 @@ fn register_mcp_methods(world: &mut World) {
             RemoteMethodSystemId::Instant(system_id),
         );
     }
+    material::register_mcp_methods(world);
 }
 
 fn log_mcp_usage() {
@@ -360,402 +347,9 @@ fn apply_orbit_camera_update(
     Ok(())
 }
 
-fn list_toon_materials_handler(In(_params): In<Option<Value>>, world: &mut World) -> BrpResult {
-    let mut query = world.query::<(
-        Entity,
-        Option<&Name>,
-        &MeshMaterial3d<ToonMaterial>,
-        Option<&ToonMaterialBindingSource>,
-    )>();
-
-    let material_refs = query
-        .iter(world)
-        .map(|(entity, name, handle, source)| {
-            (
-                entity,
-                name.map(|name| name.as_str().to_string()),
-                handle.id(),
-                source.map(|source| source.node_name.clone()),
-                source.map(|source| source.shader_key.clone()),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let materials = world.resource::<Assets<ToonMaterial>>();
-    let entries = material_refs
-        .into_iter()
-        .filter_map(|(entity, name, material_id, node_name, shader_key)| {
-            let material = materials.get(material_id)?;
-            Some(json!({
-                "entity": entity.to_bits(),
-                "name": name,
-                "material_id": format!("{:?}", material_id),
-                "node_name": node_name,
-                "shader_key": shader_key,
-                "params": ToonParamsData::from_runtime(&material.params),
-                "character_material": {
-                    "scene_primary": material.character_material.scene_primary.to_array(),
-                    "shading_primary": material.character_material.shading_primary.to_array(),
-                    "shading_secondary": material.character_material.shading_secondary.to_array(),
-                },
-            }))
-        })
-        .collect::<Vec<_>>();
-
-    Ok(json!({ "materials": entries }))
-}
-
-#[derive(Deserialize)]
-struct SetToonParamParams {
-    entity: Option<u64>,
-    node_name: Option<String>,
-    field: String,
-    value: Value,
-    #[serde(default)]
-    apply_all: bool,
-}
-
-fn set_toon_param_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
-    let params: SetToonParamParams = parse_params(params)?;
-    let target_entity = params.entity.map(parse_entity_bits).transpose()?;
-
-    let target_ids = {
-        let mut query = world.query::<(
-            Entity,
-            &MeshMaterial3d<ToonMaterial>,
-            Option<&ToonMaterialBindingSource>,
-        )>();
-
-        query
-            .iter(world)
-            .filter_map(|(entity, handle, source)| {
-                let matches_entity = target_entity.is_none_or(|target| target == entity);
-                let matches_node = params
-                    .node_name
-                    .as_deref()
-                    .is_none_or(|target| source.is_some_and(|source| source.node_name == target));
-                let should_apply = params.apply_all
-                    || params.entity.is_some()
-                    || params.node_name.is_some()
-                    || (target_entity.is_none() && params.node_name.is_none());
-
-                if should_apply && matches_entity && matches_node {
-                    Some(handle.id())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-    };
-
-    if target_ids.is_empty() {
-        return Err(invalid_params(
-            "No matching ToonMaterial found. Pass `entity`, `node_name`, or `apply_all: true`.",
-        ));
-    }
-
-    let mut changed = 0usize;
-    let mut materials = world.resource_mut::<Assets<ToonMaterial>>();
-    for id in target_ids {
-        if let Some(material) = materials.get_mut(id) {
-            set_toon_field(material, &params.field, &params.value).map_err(invalid_params)?;
-            changed += 1;
-        }
-    }
-
-    Ok(json!({
-        "success": true,
-        "field": params.field,
-        "changed_count": changed,
-    }))
-}
-
-fn handle_mcp_set_toon_param(
-    event: On<McpSetToonParam>,
-    query: Query<(
-        Entity,
-        &MeshMaterial3d<ToonMaterial>,
-        Option<&ToonMaterialBindingSource>,
-    )>,
-    mut materials: ResMut<Assets<ToonMaterial>>,
-) {
-    let target_entity = match event.entity.map(parse_entity_bits).transpose() {
-        Ok(entity) => entity,
-        Err(error) => {
-            error!("MCP set toon param event failed: {}", error.message);
-            return;
-        }
-    };
-
-    let Some(value) = toon_event_value(&event) else {
-        error!("MCP set toon param event failed: pass exactly one of number, boolean, or vec4");
-        return;
-    };
-
-    let target_ids = query
-        .iter()
-        .filter_map(|(entity, handle, source)| {
-            let matches_entity = target_entity.is_none_or(|target| target == entity);
-            let matches_node = event
-                .node_name
-                .as_deref()
-                .is_none_or(|target| source.is_some_and(|source| source.node_name == target));
-            let should_apply = event.apply_all
-                || event.entity.is_some()
-                || event.node_name.is_some()
-                || (target_entity.is_none() && event.node_name.is_none());
-
-            if should_apply && matches_entity && matches_node {
-                Some(handle.id())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
-    if target_ids.is_empty() {
-        error!("MCP set toon param event failed: no matching ToonMaterial found");
-        return;
-    }
-
-    let mut changed = 0usize;
-    for id in target_ids {
-        if let Some(material) = materials.get_mut(id) {
-            match set_toon_field(material, &event.field, &value) {
-                Ok(()) => changed += 1,
-                Err(error) => {
-                    error!("MCP set toon param event failed: {error}");
-                    return;
-                }
-            }
-        }
-    }
-
-    info!(
-        "MCP set toon param field={} changed_count={}",
-        event.field, changed
-    );
-}
-
-fn handle_mcp_save_toon_profile(
-    event: On<McpSaveToonProfile>,
-    query: Query<(
-        Entity,
-        &MeshMaterial3d<ToonMaterial>,
-        Option<&ToonMaterialBindingSource>,
-    )>,
-    materials: Res<Assets<ToonMaterial>>,
-) {
-    let target_entity = match event.entity.map(parse_entity_bits).transpose() {
-        Ok(entity) => entity,
-        Err(error) => {
-            error!("MCP save toon profile event failed: {}", error.message);
-            return;
-        }
-    };
-
-    let mut saved_count = 0usize;
-    for (entity, handle, source) in &query {
-        if !toon_source_matches(
-            entity,
-            source,
-            target_entity,
-            event.node_name.as_deref(),
-            event.apply_all,
-        ) {
-            continue;
-        }
-
-        let Some(material) = materials.get(handle) else {
-            continue;
-        };
-        let Some(source) = source else {
-            continue;
-        };
-
-        let path = match toon_profile_save_path(event.path.as_deref(), source) {
-            Ok(path) => path,
-            Err(error) => {
-                error!("MCP save toon profile event failed: {error}");
-                return;
-            }
-        };
-
-        match save_toon_material_profile(&path, source, material) {
-            Ok(()) => {
-                saved_count += 1;
-                info!(
-                    "MCP saved toon profile entity={} node={} path={}",
-                    entity.to_bits(),
-                    source.node_name,
-                    path.display()
-                );
-            }
-            Err(error) => {
-                error!("MCP save toon profile event failed: {error}");
-                return;
-            }
-        }
-    }
-
-    if saved_count == 0 {
-        error!("MCP save toon profile event failed: no matching ToonMaterial found");
-    } else {
-        info!("MCP save toon profile completed saved_count={saved_count}");
-    }
-}
-
-fn toon_source_matches(
-    entity: Entity,
-    source: Option<&ToonMaterialBindingSource>,
-    target_entity: Option<Entity>,
-    target_node_name: Option<&str>,
-    apply_all: bool,
-) -> bool {
-    let matches_entity = target_entity.is_none_or(|target| target == entity);
-    let matches_node = target_node_name
-        .is_none_or(|target| source.is_some_and(|source| source.node_name == target));
-    let should_apply = apply_all || target_entity.is_some() || target_node_name.is_some();
-
-    should_apply && matches_entity && matches_node
-}
-
-fn toon_profile_save_path(
-    explicit_path: Option<&str>,
-    source: &ToonMaterialBindingSource,
-) -> Result<PathBuf, String> {
-    if let Some(path) = explicit_path.map(str::trim).filter(|path| !path.is_empty()) {
-        return absolute_path(path).map_err(|error| error.message);
-    }
-
-    let Some(scene_asset_path) = &source.scene_asset_path else {
-        return Err(
-            "missing scene_asset_path; pass `path` or use a material loaded from a scene"
-                .to_string(),
-        );
-    };
-
-    absolute_path(&character_render_profile_path(scene_asset_path).to_string_lossy())
-        .map_err(|error| error.message)
-}
-
-fn save_toon_material_profile(
-    path: &Path,
-    source: &ToonMaterialBindingSource,
-    material: &ToonMaterial,
-) -> Result<(), String> {
-    let mut profile =
-        CharacterRenderProfile::load_from_path(path).unwrap_or_else(|_| CharacterRenderProfile {
-            version: PROFILE_VERSION,
-            model_binding: ModelBinding {
-                scene_asset_path: source.scene_asset_path.clone(),
-            },
-            shared: Default::default(),
-            parts: Vec::new(),
-        });
-    profile.version = PROFILE_VERSION;
-    if source.scene_asset_path.is_some() {
-        profile.model_binding.scene_asset_path = source.scene_asset_path.clone();
-    }
-
-    let existing_part = profile.find_part(&source.node_name).cloned();
-    let resources = existing_part
-        .as_ref()
-        .map(|part| part.resources.clone())
-        .unwrap_or_else(RenderPartResources::default);
-    let params = capture_character_surface_profile(existing_part.as_ref(), material)?;
-
-    profile.upsert_part(RenderPartBinding {
-        binding_key: source.node_name.clone(),
-        shader_key: if source.shader_key.is_empty() {
-            CHARACTER_SURFACE_SHADER_KEY.to_string()
-        } else {
-            source.shader_key.clone()
-        },
-        resources,
-        params,
-    });
-    profile.save_to_path(path)
-}
-
-fn capture_character_surface_profile(
-    existing_part: Option<&RenderPartBinding>,
-    material: &ToonMaterial,
-) -> Result<ron::value::Value, String> {
-    let mut profile = existing_part
-        .and_then(|part| ron_value_into::<CharacterMaterialProfile>(part.params.clone()).ok())
-        .unwrap_or_else(|| {
-            CharacterMaterialProfile::from_material(material, CHARACTER_SURFACE_SHADER_KEY)
-        });
-    profile.toon = ToonMaterialData::from_material(material);
-    ron_value_from_serializable(&profile)
-}
-
-fn toon_event_value(event: &McpSetToonParam) -> Option<Value> {
-    let provided_count = usize::from(event.number.is_some())
-        + usize::from(event.boolean.is_some())
-        + usize::from(event.vec4.is_some());
-    if provided_count != 1 {
-        return None;
-    }
-
-    if let Some(value) = event.number {
-        Some(json!(value))
-    } else if let Some(value) = event.boolean {
-        Some(json!(value))
-    } else {
-        event.vec4.map(|value| json!(value))
-    }
-}
-
-fn set_toon_field(material: &mut ToonMaterial, field: &str, value: &Value) -> Result<(), String> {
-    match field {
-        "base_color" => {
-            material.params.base_color = LinearRgba::from_f32_array(value_color(value)?)
-        }
-        "shade_threshold" => material.params.shade_threshold = value_f32(value)?,
-        "shade_softness" => material.params.shade_softness = value_f32(value)?,
-        "lit_boost" => material.params.lit_boost = value_f32(value)?,
-        "shadow_strength" => material.params.shadow_strength = value_f32(value)?,
-        "ambient_strength" => material.params.ambient_strength = value_f32(value)?,
-        "specular_enabled" => material.params.specular_enabled = value_bool_u32(value)?,
-        "specular_strength" => material.params.specular_strength = value_f32(value)?,
-        "specular_threshold" => material.params.specular_threshold = value_f32(value)?,
-        "specular_softness" => material.params.specular_softness = value_f32(value)?,
-        "rim_enabled" => material.params.rim_enabled = value_bool_u32(value)?,
-        "rim_strength" => material.params.rim_strength = value_f32(value)?,
-        "rim_threshold" => material.params.rim_threshold = value_f32(value)?,
-        "rim_softness" => material.params.rim_softness = value_f32(value)?,
-        "outline_enabled" => material.params.outline_enabled = value_bool_u32(value)?,
-        "outline_width" => material.params.outline_width = value_f32(value)?,
-        "alpha_cutoff" => material.params.alpha_cutoff = value_f32(value)?,
-        "specular_color" => {
-            material.params.specular_color = LinearRgba::from_f32_array(value_color(value)?);
-        }
-        "rim_color" => material.params.rim_color = LinearRgba::from_f32_array(value_color(value)?),
-        "outline_color" => {
-            material.params.outline_color = LinearRgba::from_f32_array(value_color(value)?);
-        }
-        "character_material.scene_primary" => {
-            material.character_material.scene_primary = Vec4::from_array(value_vec4(value)?);
-        }
-        "character_material.shading_primary" => {
-            material.character_material.shading_primary = Vec4::from_array(value_vec4(value)?);
-        }
-        "character_material.shading_secondary" => {
-            material.character_material.shading_secondary = Vec4::from_array(value_vec4(value)?);
-        }
-        _ => {
-            return Err(format!(
-                "Unsupported ToonMaterial field `{field}`. Use list_toon_materials to inspect supported params."
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn parse_params<T: for<'de> Deserialize<'de>>(params: Option<Value>) -> Result<T, BrpError> {
+pub(crate) fn parse_params<T: for<'de> Deserialize<'de>>(
+    params: Option<Value>,
+) -> Result<T, BrpError> {
     serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|error| BrpError {
         code: INVALID_PARAMS,
         message: format!("Invalid params: {error}"),
@@ -763,7 +357,7 @@ fn parse_params<T: for<'de> Deserialize<'de>>(params: Option<Value>) -> Result<T
     })
 }
 
-fn parse_entity_bits(bits: u64) -> Result<Entity, BrpError> {
+pub(crate) fn parse_entity_bits(bits: u64) -> Result<Entity, BrpError> {
     Entity::try_from_bits(bits)
         .ok_or_else(|| invalid_params(format!("Invalid entity bits: {bits}")))
 }
@@ -796,46 +390,7 @@ fn ensure_finite_positive(name: &str, value: f32) -> BrpResult<()> {
     }
 }
 
-fn value_f32(value: &Value) -> Result<f32, String> {
-    value
-        .as_f64()
-        .map(|value| value as f32)
-        .filter(|value| value.is_finite())
-        .ok_or_else(|| "expected a finite number".to_string())
-}
-
-fn value_bool_u32(value: &Value) -> Result<u32, String> {
-    if let Some(value) = value.as_bool() {
-        return Ok(u32::from(value));
-    }
-
-    value
-        .as_u64()
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value <= 1)
-        .ok_or_else(|| "expected boolean, 0, or 1".to_string())
-}
-
-fn value_color(value: &Value) -> Result<[f32; 4], String> {
-    value_vec4(value)
-}
-
-fn value_vec4(value: &Value) -> Result<[f32; 4], String> {
-    let values = value
-        .as_array()
-        .ok_or_else(|| "expected an array of four numbers".to_string())?;
-    if values.len() != 4 {
-        return Err("expected an array of four numbers".to_string());
-    }
-
-    let mut result = [0.0; 4];
-    for (index, value) in values.iter().enumerate() {
-        result[index] = value_f32(value)?;
-    }
-    Ok(result)
-}
-
-fn invalid_params(message: impl Into<String>) -> BrpError {
+pub(crate) fn invalid_params(message: impl Into<String>) -> BrpError {
     BrpError {
         code: INVALID_PARAMS,
         message: message.into(),
@@ -843,7 +398,7 @@ fn invalid_params(message: impl Into<String>) -> BrpError {
     }
 }
 
-fn internal_error(message: impl Into<String>) -> BrpError {
+pub(crate) fn internal_error(message: impl Into<String>) -> BrpError {
     BrpError {
         code: INTERNAL_ERROR,
         message: message.into(),
@@ -880,7 +435,7 @@ fn next_capture_path(counter: u32) -> PathBuf {
     capture_directory().join(Path::new(&file_name))
 }
 
-fn absolute_path(path: &str) -> Result<PathBuf, BrpError> {
+pub(crate) fn absolute_path(path: &str) -> Result<PathBuf, BrpError> {
     let path = Path::new(path);
     if path.is_absolute() {
         Ok(path.to_path_buf())

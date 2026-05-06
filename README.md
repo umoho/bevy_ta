@@ -31,7 +31,7 @@ Codex 通过项目内 `.codex/config.toml` 自动加载 `bevy-brp` MCP server。
 
 - `bevy_ta::mcp::McpSetOrbitCamera`: 按 `name` 或 `entity` 设置 `target`、`distance`、`yaw`、`pitch`。
 - `bevy_ta::mcp::McpCapturePrimaryWindow`: 保存主窗口截图，参数为 `{ "path": "assets/private/captures/capture.png" }`。
-- `bevy_ta::mcp::McpSetToonParam`: 按 `entity`、`node_name` 或 `apply_all` 修改 Toon shader 参数。参数包含 `field`、`apply_all`，并且在 `number`、`boolean`、`vec4` 中只传一个值。
+- `bevy_ta::mcp::McpSetMaterialParam`: 按 `entity`、`node_name`、`shader_key` 或 `apply_all` 修改运行时材质参数。参数包含 `field`、`apply_all`，并且在 `number`、`boolean`、`vec4` 中只传一个值；公共字段使用 `toon.*`、`character_material.*` 路径，shader 专属字段使用如 `face_sdf.*` 的路径。若不传任何筛选条件，必须显式传 `apply_all: true`。
 - `bevy_ta::mcp::McpSaveToonProfile`: 把当前 Toon 材质参数保存到 `.toon-model.ron`。默认根据 `BEVY_TA_CHARACTER_SCENE` 对应的 scene asset 路径推导 profile 路径，也可以显式传 `path`。
 - `bevy_ta::mcp::debug_camera::McpCreateDebugCamera`: 新建一个调试摄像机，渲染到独立 offscreen image，不影响主窗口和 UI。
 - `bevy_ta::mcp::debug_camera::McpSetDebugCamera`: 按 `name` 或 `entity` 修改调试摄像机的位置、目标点、分辨率或启用状态。
@@ -54,5 +54,5 @@ scripts/bevy_ta_brp
 - `bevy_ta/list_cameras`: 列出相机和 orbit 参数。
 - `bevy_ta/set_orbit_camera`: 按 `name` 或 `entity` 设置 `target`、`distance`、`yaw`、`pitch`。
 - `bevy_ta/capture_primary_window`: 保存主窗口截图，参数为 `{ "path": "assets/private/captures/capture.png" }`。
-- `bevy_ta/list_toon_materials`: 列出场景中的 `ToonMaterial` 参数。
-- `bevy_ta/set_toon_param`: 按 `entity`、`node_name` 或 `apply_all` 修改 Toon shader 参数，例如 `{ "field": "rim_strength", "value": 1.2, "apply_all": true }`。
+- `bevy_ta/list_material_params`: 列出场景中的材质参数快照，返回公共 `toon`、`character_material` 分组，以及按 `shader_key` 展开的 shader 专属分组。
+- `bevy_ta/set_material_param`: 按 `entity`、`node_name`、`shader_key` 或 `apply_all` 修改材质参数。若不传任何筛选条件，必须显式传 `apply_all: true`。例如 `{ "field": "toon.rim_strength", "value": 1.2, "apply_all": true }`，或 `{ "node_name": "Face.Face", "shader_key": "character_face_sdf", "field": "face_sdf.threshold_bias", "value": 0.08 }`。
