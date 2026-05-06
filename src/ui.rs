@@ -819,6 +819,7 @@ fn show_face_sdf_editor(ui: &mut egui::Ui, params: &mut FaceSdfParamsData) {
             ui.checkbox(&mut params.enabled, "启用面部 SDF");
             ui.checkbox(&mut params.use_texture, "使用面部阴影贴图");
             ui.checkbox(&mut params.uv_mirror_enabled, "按左右光向镜像 U");
+            ui.add(egui::Slider::new(&mut params.specular_preserve, 0.0..=1.0).text("保留高光"));
             ui.add(egui::Slider::new(&mut params.shadow_strength, 0.0..=1.0).text("阴影强度"));
             ui.add(egui::Slider::new(&mut params.blend_weight, 0.0..=1.0).text("替代权重"));
             ui.add(egui::Slider::new(&mut params.threshold_bias, -0.5..=0.5).text("阈值偏移"));

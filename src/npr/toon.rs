@@ -253,6 +253,7 @@ pub struct FaceSdfParams {
     pub texture_enabled: u32,
     pub uv_mirror_enabled: u32,
     pub debug_mode: u32,
+    pub specular_preserve: f32,
     pub shadow_strength: f32,
     pub blend_weight: f32,
     pub threshold_bias: f32,
@@ -277,6 +278,7 @@ impl Default for FaceSdfParams {
             texture_enabled: 0,
             uv_mirror_enabled: 1,
             debug_mode: 0,
+            specular_preserve: 0.0,
             shadow_strength: 0.85,
             blend_weight: 1.0,
             threshold_bias: 0.0,
@@ -302,6 +304,8 @@ pub struct FaceSdfParamsData {
     pub use_texture: bool,
     pub uv_mirror_enabled: bool,
     pub debug_mode: u32,
+    #[serde(default)]
+    pub specular_preserve: f32,
     pub shadow_strength: f32,
     pub blend_weight: f32,
     pub threshold_bias: f32,
@@ -322,6 +326,7 @@ impl FaceSdfParamsData {
             data.use_texture = params.texture_enabled != 0;
             data.uv_mirror_enabled = params.uv_mirror_enabled != 0;
             data.debug_mode = params.debug_mode;
+            data.specular_preserve = params.specular_preserve;
             data.shadow_strength = params.shadow_strength;
             data.blend_weight = params.blend_weight;
             data.threshold_bias = params.threshold_bias;
@@ -350,6 +355,7 @@ impl FaceSdfParamsData {
         params.texture_enabled = u32::from(self.use_texture);
         params.uv_mirror_enabled = u32::from(self.uv_mirror_enabled);
         params.debug_mode = self.debug_mode;
+        params.specular_preserve = self.specular_preserve;
         params.shadow_strength = self.shadow_strength;
         params.blend_weight = self.blend_weight;
         params.threshold_bias = self.threshold_bias;
@@ -371,6 +377,7 @@ impl Default for FaceSdfParamsData {
             use_texture: false,
             uv_mirror_enabled: true,
             debug_mode: 0,
+            specular_preserve: 0.0,
             shadow_strength: 0.85,
             blend_weight: 1.0,
             threshold_bias: 0.0,

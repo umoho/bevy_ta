@@ -41,6 +41,7 @@ struct FaceSdfParams {
     texture_enabled: u32,
     uv_mirror_enabled: u32,
     debug_mode: u32,
+    specular_preserve: f32,
     shadow_strength: f32,
     blend_weight: f32,
     threshold_bias: f32,
@@ -206,6 +207,7 @@ fn toon_lit_base(
 fn toon_specular(normal: vec3<f32>, light_dir: vec3<f32>, view_dir: vec3<f32>) -> vec3<f32> {
     let specular_scale = character_material.shading_primary.y;
     let specular_strength = toon.specular_strength * specular_scale;
+    let face_specular_scale = select(1.0, face_sdf.specular_preserve, face_sdf.enabled != 0u);
     let half_vec = normalize(light_dir + view_dir);
     let specular_base = saturate(dot(normal, half_vec));
     let specular_start = saturate(toon.specular_threshold - toon.specular_softness);
@@ -213,6 +215,7 @@ fn toon_specular(normal: vec3<f32>, light_dir: vec3<f32>, view_dir: vec3<f32>) -
     let specular_enabled = select(0.0, 1.0, toon.specular_enabled != 0u);
     let specular = smoothstep(specular_start, specular_end, specular_base)
         * specular_strength
+        * face_specular_scale
         * specular_enabled;
 
     return toon.specular_color.rgb * specular;

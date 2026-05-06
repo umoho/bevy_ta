@@ -214,6 +214,10 @@ impl ShaderProfileHandler for CharacterMaterialProfileHandler {
                 material.face_sdf.debug_mode = value_u32(value)?;
                 true
             }
+            "face_sdf.specular_preserve" => {
+                material.face_sdf.specular_preserve = value_f32(value)?;
+                true
+            }
             "face_sdf.shadow_strength" => {
                 material.face_sdf.shadow_strength = value_f32(value)?;
                 true
