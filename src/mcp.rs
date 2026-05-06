@@ -17,9 +17,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::app::OrbitCamera;
+use crate::debug_gizmos::DebugGizmoSettings;
 
 mod debug_camera;
 mod material;
+
+pub(crate) use debug_camera::McpDebugCamera;
 
 const BRP_PORT_ENV: &str = "BRP_EXTRAS_PORT";
 const SCREENSHOT_DIR_ENV: &str = "BEVY_TA_CAPTURE_DIR";
@@ -35,6 +38,7 @@ impl Plugin for McpDebugPlugin {
             .init_resource::<CaptureCounter>()
             .register_type::<McpCapturePrimaryWindow>()
             .register_type::<McpSetOrbitCamera>()
+            .register_type::<McpSetGizmosEnabled>()
             .register_type::<McpSetMaterialParam>()
             .register_type::<McpSaveToonProfile>()
             .register_type::<debug_camera::McpDebugCamera>()
@@ -52,6 +56,7 @@ impl Plugin for McpDebugPlugin {
             )
             .add_observer(handle_mcp_capture_primary_window)
             .add_observer(handle_mcp_set_orbit_camera)
+            .add_observer(handle_mcp_set_gizmos_enabled)
             .add_observer(material::handle_mcp_set_material_param)
             .add_observer(material::handle_mcp_save_toon_profile)
             .add_observer(debug_camera::handle_create_debug_camera)
@@ -81,6 +86,12 @@ pub struct McpSetOrbitCamera {
     pub distance: Option<f32>,
     pub yaw: Option<f32>,
     pub pitch: Option<f32>,
+}
+
+#[derive(Event, Reflect, Debug, Clone, Default)]
+#[reflect(Event, Default)]
+pub struct McpSetGizmosEnabled {
+    pub enabled: bool,
 }
 
 /// 通过字段路径修改运行时材质参数。
@@ -114,6 +125,10 @@ fn register_mcp_methods(world: &mut World) {
             world.register_system(capture_primary_window_handler),
         ),
         ("list_cameras", world.register_system(list_cameras_handler)),
+        (
+            "set_gizmos_enabled",
+            world.register_system(set_gizmos_enabled_handler),
+        ),
         (
             "set_orbit_camera",
             world.register_system(set_orbit_camera_handler),
@@ -182,6 +197,21 @@ fn handle_mcp_capture_primary_window(event: On<McpCapturePrimaryWindow>, mut com
     }
 }
 
+#[derive(Deserialize)]
+struct SetGizmosEnabledParams {
+    enabled: bool,
+}
+
+fn set_gizmos_enabled_handler(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let params: SetGizmosEnabledParams = parse_params(params)?;
+    world.resource_mut::<DebugGizmoSettings>().enabled = params.enabled;
+
+    Ok(json!({
+        "success": true,
+        "enabled": params.enabled,
+    }))
+}
+
 fn spawn_primary_window_screenshot(commands: &mut Commands, path: PathBuf) {
     if let Some(parent) = path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
@@ -226,6 +256,14 @@ fn list_cameras_handler(In(_params): In<Option<Value>>, world: &mut World) -> Br
         .collect::<Vec<_>>();
 
     Ok(json!({ "cameras": cameras }))
+}
+
+fn handle_mcp_set_gizmos_enabled(
+    event: On<McpSetGizmosEnabled>,
+    mut gizmos_enabled: ResMut<DebugGizmoSettings>,
+) {
+    gizmos_enabled.enabled = event.enabled;
+    info!("MCP set gizmos enabled={}", event.enabled);
 }
 
 #[derive(Deserialize)]

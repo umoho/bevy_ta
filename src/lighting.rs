@@ -6,6 +6,8 @@ use bevy_egui::{EguiContexts, egui};
 #[cfg(feature = "dev_ui")]
 use egui::Ui;
 
+use crate::debug_gizmos::DebugGizmoSettings;
+
 const DEFAULT_LIGHT_CENTER: Vec3 = Vec3::new(0.0, 1.1, 0.0);
 const DEFAULT_LIGHT_RADIUS: f32 = 2.5;
 const DEFAULT_LIGHT_YAW: f32 = -0.35;
@@ -23,7 +25,6 @@ pub struct OrbitingLightSettings {
     pub pitch: f32,
     pub illuminance: f32,
     pub shadows_enabled: bool,
-    pub show_gizmos: bool,
 }
 
 impl Default for OrbitingLightSettings {
@@ -35,7 +36,6 @@ impl Default for OrbitingLightSettings {
             pitch: DEFAULT_LIGHT_PITCH,
             illuminance: 18_000.0,
             shadows_enabled: true,
-            show_gizmos: true,
         }
     }
 }
@@ -93,8 +93,12 @@ fn sync_orbiting_main_light(
     }
 }
 
-fn draw_orbiting_light_gizmos(settings: Res<OrbitingLightSettings>, mut gizmos: Gizmos) {
-    if !settings.show_gizmos {
+fn draw_orbiting_light_gizmos(
+    settings: Res<OrbitingLightSettings>,
+    gizmos_enabled: Res<DebugGizmoSettings>,
+    mut gizmos: Gizmos,
+) {
+    if !gizmos_enabled.enabled || !gizmos_enabled.show_orbiting_light {
         return;
     }
 
@@ -177,7 +181,6 @@ fn show_light_control_panel(
             vec3_editor(ui, &mut settings.center);
             ui.horizontal(|ui| {
                 ui.checkbox(&mut settings.shadows_enabled, "阴影");
-                ui.checkbox(&mut settings.show_gizmos, "Gizmos");
             });
 
             ui.separator();

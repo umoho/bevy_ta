@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod app;
+pub mod debug_gizmos;
 pub mod lighting;
 #[cfg(feature = "brp_tools")]
 pub mod mcp;

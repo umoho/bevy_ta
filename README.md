@@ -32,6 +32,7 @@ Codex 通过项目内 `.codex/config.toml` 自动加载 `bevy-brp` MCP server。
 - `bevy_ta::mcp::McpSetOrbitCamera`: 按 `name` 或 `entity` 设置 `target`、`distance`、`yaw`、`pitch`。
 - `bevy_ta::mcp::McpCapturePrimaryWindow`: 保存主窗口截图，参数为 `{ "path": "assets/private/captures/capture.png" }`。
 - `bevy_ta::mcp::McpSetMaterialParam`: 按 `entity`、`node_name`、`shader_key` 或 `apply_all` 修改运行时材质参数。参数包含 `field`、`apply_all`，并且在 `number`、`boolean`、`vec4` 中只传一个值；公共字段使用 `toon.*`、`character_material.*` 路径，shader 专属字段使用如 `face_sdf.*` 的路径。若不传任何筛选条件，必须显式传 `apply_all: true`。
+- `bevy_ta::mcp::McpSetGizmosEnabled`: 打开或关闭当前 gizmos，参数为 `{ "enabled": true }` 或 `{ "enabled": false }`。
 - `bevy_ta::mcp::McpSaveToonProfile`: 把当前 Toon 材质参数保存到 `.toon-model.ron`。默认根据 `BEVY_TA_CHARACTER_SCENE` 对应的 scene asset 路径推导 profile 路径，也可以显式传 `path`。
 - `bevy_ta::mcp::debug_camera::McpCreateDebugCamera`: 新建一个调试摄像机，渲染到独立 offscreen image，不影响主窗口和 UI。
 - `bevy_ta::mcp::debug_camera::McpSetDebugCamera`: 按 `name` 或 `entity` 修改调试摄像机的位置、目标点、分辨率或启用状态。
@@ -39,6 +40,9 @@ Codex 通过项目内 `.codex/config.toml` 自动加载 `bevy-brp` MCP server。
 - `bevy_ta::mcp::debug_camera::McpDeleteDebugCamera`: 删除一个或全部调试摄像机；删除会延迟几帧清理，避免渲染线程仍引用 view。
 
 调试摄像机查询使用标准 `world_query`，过滤 `bevy_ta::mcp::debug_camera::McpDebugCamera` 组件即可。
+
+全局 gizmos 默认关闭，可按 `G` 切换，或通过 `bevy_ta::mcp::McpSetGizmosEnabled` 显式控制。
+在 `dev_ui` 下还有独立的“调试 gizmos”窗口，可以分别开关角色包围盒、选中 primitive 线框、调试摄像机和方向光辅助。
 
 真实资产调试建议在有桌面/GPU 的终端中启动 app，Codex 只通过 BRP 连接已运行进程。`scripts/bevy_ta_brp` 默认使用 release 构建，并透传 app 使用的环境变量：
 

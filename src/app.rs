@@ -1,5 +1,6 @@
 use std::{env, f32::consts::FRAC_PI_2};
 
+use bevy::pbr::wireframe::WireframePlugin;
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     prelude::*,
@@ -7,6 +8,7 @@ use bevy::{
 #[cfg(feature = "dev_ui")]
 use bevy_egui::input::EguiWantsInput;
 
+use crate::debug_gizmos::DebugGizmoPlugin;
 use crate::lighting::LightingPlugin;
 use crate::npr::{
     NprPlugin,
@@ -20,6 +22,7 @@ const DEFAULT_PRIVATE_SCENE_SCALE: f32 = 5.0;
 pub fn run() {
     let mut app = App::new();
     app.init_resource::<OrbitCameraSettings>()
+        .add_plugins(DebugGizmoPlugin)
         .add_plugins(LightingPlugin)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -29,6 +32,7 @@ pub fn run() {
             }),
             ..Default::default()
         }))
+        .add_plugins(WireframePlugin::default())
         .add_plugins(NprPlugin)
         .add_systems(Startup, setup)
         .add_systems(Update, (orbit_camera, toggle_outline));

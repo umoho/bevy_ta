@@ -11,6 +11,7 @@ use bevy_egui::{
 };
 use bevy_material_preview::{MaterialPreviewAppExt, MaterialPreviewPlugin, MaterialPreviewSession};
 
+use crate::debug_gizmos::DebugSceneSelection;
 use crate::npr::{
     profile::{
         CHARACTER_FACE_SDF_SHADER_KEY, CHARACTER_HAIR_SHADER_KEY, CHARACTER_SURFACE_SHADER_KEY,
@@ -77,7 +78,7 @@ struct MaterialSourceInfo {
 
 #[derive(Clone)]
 struct MaterialSourceNode {
-    mesh_entity: Entity,
+    primitive_entity: Entity,
     node_name: String,
 }
 
@@ -148,11 +149,11 @@ fn spawn_material_icon_previews(
         ),
     >::new();
 
-    for (mesh_entity, material_handle, name, binding_source) in mesh_materials.iter() {
+    for (primitive_entity, material_handle, name, binding_source) in mesh_materials.iter() {
         // 只收集真正业务模型上的 toon 网格，避免材质预览球自己再次触发预览递归生成。
-        let is_target_mesh = toon_targets.contains(mesh_entity)
+        let is_target_mesh = toon_targets.contains(primitive_entity)
             || parent_query
-                .iter_ancestors(mesh_entity)
+                .iter_ancestors(primitive_entity)
                 .any(|ancestor| toon_targets.contains(ancestor));
         if !is_target_mesh {
             continue;
@@ -166,7 +167,7 @@ fn spawn_material_icon_previews(
         let node_name = binding_source
             .map(|source| source.node_name.clone())
             .or_else(|| name.map(ToString::to_string))
-            .unwrap_or_else(|| format!("节点 {}", mesh_entity.index()));
+            .unwrap_or_else(|| format!("primitive {}", primitive_entity.index()));
         let scene_asset_path = binding_source.and_then(|source| source.scene_asset_path.clone());
         let shader_key = binding_source
             .map(|source| source.shader_key.clone())
@@ -188,7 +189,7 @@ fn spawn_material_icon_previews(
             })
             .1
             .push(MaterialSourceNode {
-                mesh_entity,
+                primitive_entity,
                 node_name,
             });
         existing_materials.push(material_id);
@@ -203,9 +204,11 @@ fn spawn_material_icon_previews(
             continue;
         };
         source_nodes.sort_by(|left, right| {
-            left.node_name
-                .cmp(&right.node_name)
-                .then_with(|| left.mesh_entity.index().cmp(&right.mesh_entity.index()))
+            left.node_name.cmp(&right.node_name).then_with(|| {
+                left.primitive_entity
+                    .index()
+                    .cmp(&right.primitive_entity.index())
+            })
         });
 
         commands.spawn((
@@ -316,9 +319,9 @@ fn show_material_library_panel(
                 .cmp(&right_node.node_name)
                 .then_with(|| {
                     left_node
-                        .mesh_entity
+                        .primitive_entity
                         .index()
-                        .cmp(&right_node.mesh_entity.index())
+                        .cmp(&right_node.primitive_entity.index())
                 }),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -387,6 +390,7 @@ fn show_material_entry(
 fn show_material_property_panel(
     mut contexts: EguiContexts,
     selected: Res<SelectedToonMaterial>,
+    mut debug_selection: ResMut<DebugSceneSelection>,
     asset_server: Res<AssetServer>,
     material_handles: Query<&MaterialHandle<ToonMaterial>>,
     mut source_infos: Query<&mut MaterialSourceInfo>,
@@ -400,17 +404,28 @@ fn show_material_property_panel(
     mut persistence_state: Local<MaterialPersistenceState>,
 ) {
     let Some(selected_entity) = selected.icon_entity else {
+        debug_selection.clear_selected_material();
         return;
     };
     let Ok(material_handle) = material_handles.get(selected_entity) else {
+        debug_selection.clear_selected_material();
         return;
     };
     let Ok(mut source_info) = source_infos.get_mut(selected_entity) else {
+        debug_selection.clear_selected_material();
         return;
     };
     let Some(material) = materials.get_mut(material_handle.0.id()) else {
+        debug_selection.clear_selected_material();
         return;
     };
+    debug_selection.set_selected_material(
+        selected_entity,
+        source_info
+            .source_nodes
+            .iter()
+            .map(|source_node| source_node.primitive_entity),
+    );
     let property_preview_texture = selected
         .property_preview_entity
         .and_then(|entity| property_previews.get(entity).ok())
@@ -484,12 +499,12 @@ fn show_selected_material_preview(
             ui.add_sized(display_size, egui::Spinner::new());
         }
         ui.add_space(10.0);
-        ui.heading("当前节点材质");
+        ui.heading("当前 primitive 材质");
         if let Some(first_source) = source_info.source_nodes.first() {
             if source_info.source_nodes.len() > 1 {
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} 等 {} 个节点",
+                        "{} 等 {} 个 primitive",
                         first_source.node_name,
                         source_info.source_nodes.len()
                     ))
@@ -499,24 +514,24 @@ fn show_selected_material_preview(
                 ui.label(egui::RichText::new(&first_source.node_name).italics());
             }
         } else {
-            ui.label(egui::RichText::new("未命名节点").italics());
+            ui.label(egui::RichText::new("未命名 primitive").italics());
         }
         for source_node in source_info.source_nodes.iter().take(4) {
             ui.small(format!(
                 "{} ({:?})",
-                source_node.node_name, source_node.mesh_entity
+                source_node.node_name, source_node.primitive_entity
             ));
         }
         if source_info.source_nodes.len() > 4 {
             ui.small(format!(
-                "还有 {} 个节点...",
+                "还有 {} 个 primitive...",
                 source_info.source_nodes.len() - 4
             ));
         }
         if let Some(path) = &source_info.binding_file_path {
             ui.small(format!("模型绑定 {}", path.display()));
         } else {
-            ui.small("当前节点没有模型绑定文件");
+            ui.small("当前 primitive 没有模型绑定文件");
         }
         ui.small(format!("着色器类型 {}", source_info.shader_key));
         ui.add_space(6.0);
