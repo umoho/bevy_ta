@@ -90,6 +90,7 @@ fn setup(
             pitch: -0.2,
             orbit_velocity: Vec2::ZERO,
             zoom_velocity: 0.0,
+            pan_velocity: Vec2::ZERO,
         },
         Name::new("camera_orbit"),
     ));
@@ -162,6 +163,7 @@ pub(crate) struct OrbitCamera {
     pub(crate) pitch: f32,
     pub(crate) orbit_velocity: Vec2,
     pub(crate) zoom_velocity: f32,
+    pub(crate) pan_velocity: Vec2,
 }
 
 impl OrbitCamera {
@@ -176,7 +178,9 @@ impl OrbitCamera {
 struct OrbitCameraSettings {
     orbit_sensitivity: f32,
     zoom_sensitivity: f32,
+    pan_sensitivity: f32,
     damping: f32,
+    pan_damping: f32,
 }
 
 impl Default for OrbitCameraSettings {
@@ -184,7 +188,9 @@ impl Default for OrbitCameraSettings {
         Self {
             orbit_sensitivity: 0.005,
             zoom_sensitivity: 0.025,
+            pan_sensitivity: 0.0010,
             damping: 14.0,
+            pan_damping: 20.0,
         }
     }
 }
@@ -221,13 +227,20 @@ fn orbit_camera(
         }
 
         if mouse_scroll.delta != Vec2::ZERO {
+            let is_pan = keyboard.any_pressed([KeyCode::Space]);
             let is_zoom = keyboard.any_pressed([
                 KeyCode::ControlLeft,
                 KeyCode::ControlRight,
                 KeyCode::SuperLeft,
                 KeyCode::SuperRight,
             ]);
-            if is_zoom {
+            if is_pan {
+                let distance = orbit.distance;
+                orbit.pan_velocity += Vec2::new(-mouse_scroll.delta.x, mouse_scroll.delta.y)
+                    * settings.pan_sensitivity
+                    * distance
+                    * 30.0;
+            } else if is_zoom {
                 orbit.zoom_velocity += mouse_scroll.delta.y * settings.zoom_sensitivity * 30.0;
             } else {
                 orbit.orbit_velocity += Vec2::new(-mouse_scroll.delta.x, -mouse_scroll.delta.y)
@@ -242,9 +255,19 @@ fn orbit_camera(
         orbit.distance =
             (orbit.distance + orbit.zoom_velocity * dt).clamp(MIN_DISTANCE, MAX_DISTANCE);
 
+        if orbit.pan_velocity != Vec2::ZERO {
+            let pan_velocity = orbit.pan_velocity;
+            let rotation = Quat::from_euler(EulerRot::YXZ, orbit.yaw, orbit.pitch, 0.0);
+            let right = rotation * Vec3::X;
+            let up = rotation * Vec3::Y;
+            orbit.target += (right * pan_velocity.x + up * pan_velocity.y) * dt;
+        }
+
         let drag = (-settings.damping * dt).exp();
         orbit.orbit_velocity *= drag;
         orbit.zoom_velocity *= drag;
+        let pan_drag = (-settings.pan_damping * dt).exp();
+        orbit.pan_velocity *= pan_drag;
 
         orbit.apply_to_transform(&mut transform);
     }
