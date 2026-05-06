@@ -42,7 +42,7 @@ Codex 通过项目内 `.codex/config.toml` 自动加载 `bevy-brp` MCP server。
 调试摄像机查询使用标准 `world_query`，过滤 `bevy_ta::mcp::debug_camera::McpDebugCamera` 组件即可。
 
 全局 gizmos 默认关闭，可按 `G` 切换，或通过 `bevy_ta::mcp::McpSetGizmosEnabled` 显式控制。
-在 `dev_ui` 下还有独立的“调试 gizmos”窗口，可以分别开关角色包围盒、选中 primitive 线框、调试摄像机和方向光辅助。
+在 `dev_ui` 下还有独立的“调试 gizmos”窗口，可以分别开关角色包围盒、包围盒中心轴、选中 primitive 线框、调试摄像机和方向光辅助。
 
 真实资产调试建议在有桌面/GPU 的终端中启动 app，Codex 只通过 BRP 连接已运行进程。`scripts/bevy_ta_brp` 默认使用 release 构建，并透传 app 使用的环境变量：
 

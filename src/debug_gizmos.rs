@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use bevy::camera::Projection;
 use bevy::pbr::wireframe::{Wireframe, WireframeColor};
 use bevy::{camera::primitives::Aabb, prelude::*, transform::TransformSystems};
 #[cfg(feature = "dev_ui")]
@@ -13,12 +14,13 @@ const DEBUG_GIZMO_TOGGLE_KEY: KeyCode = KeyCode::KeyG;
 const CHARACTER_AABB_COLOR: Color = Color::srgba(0.35, 0.85, 1.0, 0.95);
 const SELECTED_PRIMITIVE_COLOR: Color = Color::srgba(1.0, 0.78, 0.22, 0.95);
 const DEBUG_CAMERA_COLOR: Color = Color::srgba(0.95, 0.45, 0.35, 0.95);
-const DEBUG_CAMERA_TARGET_COLOR: Color = Color::srgba(0.30, 0.95, 0.70, 0.95);
+const DEBUG_CAMERA_ICON_SCALE: f32 = 0.14;
 
 #[derive(Resource, Debug, Clone)]
 pub struct DebugGizmoSettings {
     pub enabled: bool,
     pub show_character_bounds: bool,
+    pub show_character_bounds_axes: bool,
     pub show_selected_primitives: bool,
     pub show_debug_cameras: bool,
     pub show_orbiting_light: bool,
@@ -29,6 +31,7 @@ impl Default for DebugGizmoSettings {
         Self {
             enabled: false,
             show_character_bounds: true,
+            show_character_bounds_axes: false,
             show_selected_primitives: true,
             show_debug_cameras: true,
             show_orbiting_light: true,
@@ -199,45 +202,120 @@ fn draw_character_bounds(
         };
 
         gizmos.aabb_3d(world_aabb, Transform::IDENTITY, CHARACTER_AABB_COLOR);
-        gizmos.axes(
-            Transform::from_translation(world_aabb.center.into()),
-            world_aabb.half_extents.length().max(0.35),
-        );
+        if settings.show_character_bounds_axes {
+            gizmos.axes(
+                Transform::from_translation(world_aabb.center.into()),
+                world_aabb.half_extents.length().max(0.35),
+            );
+        }
     }
 }
 
 #[cfg(feature = "brp_tools")]
 fn draw_debug_camera_gizmos(
     settings: Res<DebugGizmoSettings>,
-    cameras: Query<(&McpDebugCamera, &GlobalTransform)>,
+    cameras: Query<(&McpDebugCamera, &GlobalTransform, &Projection)>,
     mut gizmos: Gizmos,
 ) {
     if !settings.enabled || !settings.show_debug_cameras {
         return;
     }
 
-    for (camera, transform) in &cameras {
+    for (camera, transform, projection) in &cameras {
         let camera_position = transform.translation();
         let target = Vec3::from_array(camera.target);
 
-        gizmos.arrow(camera_position, target, DEBUG_CAMERA_COLOR);
-        gizmos.sphere(
-            Isometry3d::from_translation(camera_position),
-            0.06,
-            DEBUG_CAMERA_COLOR,
-        );
-        gizmos.sphere(
-            Isometry3d::from_translation(target),
-            0.05,
-            DEBUG_CAMERA_TARGET_COLOR,
-        );
-        gizmos.axes(*transform, 0.25);
+        draw_debug_camera_frustum(&mut gizmos, camera_position, target, projection);
     }
 }
 
 #[cfg(not(feature = "brp_tools"))]
 fn draw_debug_camera_gizmos(settings: Res<DebugGizmoSettings>, mut gizmos: Gizmos) {
     let _ = (settings, &mut gizmos);
+}
+
+#[cfg(feature = "brp_tools")]
+fn draw_debug_camera_frustum(
+    gizmos: &mut Gizmos,
+    camera_position: Vec3,
+    target: Vec3,
+    projection: &Projection,
+) {
+    let Projection::Perspective(perspective) = projection else {
+        gizmos.line(camera_position, target, DEBUG_CAMERA_COLOR);
+        return;
+    };
+
+    let forward = (target - camera_position).normalize_or_zero();
+    if forward.length_squared() == 0.0 {
+        return;
+    }
+
+    let up_hint = if forward.dot(Vec3::Y).abs() > 0.98 {
+        Vec3::X
+    } else {
+        Vec3::Y
+    };
+    let right = forward.cross(up_hint).normalize_or_zero();
+    if right.length_squared() == 0.0 {
+        return;
+    }
+    let up = right.cross(forward).normalize_or_zero();
+    if up.length_squared() == 0.0 {
+        return;
+    }
+
+    let depth = camera_position.distance(target).max(0.35) * DEBUG_CAMERA_ICON_SCALE;
+    let half_height = (perspective.fov * 0.5).tan() * depth;
+    let half_width = half_height * perspective.aspect_ratio.max(0.01);
+    let frustum_center = camera_position + forward * depth;
+
+    let top_left = frustum_center + up * half_height - right * half_width;
+    let top_right = frustum_center + up * half_height + right * half_width;
+    let bottom_left = frustum_center - up * half_height - right * half_width;
+    let bottom_right = frustum_center - up * half_height + right * half_width;
+
+    gizmos.line(camera_position, top_left, DEBUG_CAMERA_COLOR);
+    gizmos.line(camera_position, top_right, DEBUG_CAMERA_COLOR);
+    gizmos.line(camera_position, bottom_left, DEBUG_CAMERA_COLOR);
+    gizmos.line(camera_position, bottom_right, DEBUG_CAMERA_COLOR);
+
+    gizmos.line(top_left, top_right, DEBUG_CAMERA_COLOR);
+    gizmos.line(top_right, bottom_right, DEBUG_CAMERA_COLOR);
+    gizmos.line(bottom_right, bottom_left, DEBUG_CAMERA_COLOR);
+    gizmos.line(bottom_left, top_left, DEBUG_CAMERA_COLOR);
+
+    draw_debug_camera_up_triangle(
+        gizmos,
+        frustum_center,
+        up,
+        right,
+        depth,
+        half_height,
+        half_width,
+    );
+}
+
+#[cfg(feature = "brp_tools")]
+fn draw_debug_camera_up_triangle(
+    gizmos: &mut Gizmos,
+    frustum_center: Vec3,
+    up: Vec3,
+    right: Vec3,
+    depth: f32,
+    half_height: f32,
+    half_width: f32,
+) {
+    let marker_height = (depth * 0.225).max(0.0825);
+    let marker_width = (half_width * 0.83).min(depth * 0.39).max(depth * 0.165);
+    let gap = (marker_height * 0.52).max(depth * 0.045);
+    let triangle_center = frustum_center + up * (half_height + gap + marker_height * 0.10);
+    let top = triangle_center + up * marker_height * 0.58;
+    let left = triangle_center - up * marker_height * 0.42 - right * marker_width * 0.50;
+    let right_point = triangle_center - up * marker_height * 0.42 + right * marker_width * 0.50;
+    let triangle = Triangle3d::new(top, left, right_point);
+
+    gizmos.primitive_3d(&triangle, Isometry3d::IDENTITY, DEBUG_CAMERA_COLOR);
 }
 
 #[cfg(feature = "dev_ui")]
@@ -259,7 +337,10 @@ fn show_debug_gizmo_window(mut contexts: EguiContexts, mut settings: ResMut<Debu
             });
 
             ui.separator();
-            ui.checkbox(&mut settings.show_character_bounds, "角色包围盒");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut settings.show_character_bounds, "角色包围盒");
+                ui.checkbox(&mut settings.show_character_bounds_axes, "中心轴");
+            });
             ui.checkbox(
                 &mut settings.show_selected_primitives,
                 "选中 primitive 线框",
