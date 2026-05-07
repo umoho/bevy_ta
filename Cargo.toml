@@ -8,6 +8,7 @@ bevy = { version = "0.18.1", features = ["debug", "jpeg", "png"] }
 bevy_egui = { version = "0.39.1", optional = true }
 bevy-inspector-egui = { version = "0.36.0", optional = true }
 bevy_material_preview = { version = "0.2.0", path = "../bevy_material_preview", optional = true }
+bevy_picking = { version = "0.18.1", features = ["mesh_picking"] }
 bevy_brp_extras = { version = "0.18.4", optional = true }
 bevy_remote = { version = "0.18.1", optional = true }
 egui-chinese-font = { version = "0.2.0", path = "../git_cloned/egui-chinese-font", optional = true }

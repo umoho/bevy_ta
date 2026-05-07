@@ -9,6 +9,8 @@ use bevy::{
 use bevy_egui::input::EguiWantsInput;
 
 mod initial_orbit;
+#[cfg(feature = "dev_ui")]
+mod scene_picking;
 
 use crate::debug_gizmos::DebugGizmoPlugin;
 use crate::lighting::LightingPlugin;
@@ -16,6 +18,7 @@ use crate::npr::{
     NprPlugin,
     toon::{ToonMaterial, ToonMaterialTarget, ToonModelBindingAssetPath},
 };
+use crate::selection::MaterialSelectionState;
 #[cfg(feature = "dev_ui")]
 use crate::ui::DevWindowState;
 
@@ -28,6 +31,7 @@ const BASE_MAX_DISTANCE: f32 = 150.0;
 pub fn run() {
     let mut app = App::new();
     app.init_resource::<OrbitCameraSettings>()
+        .init_resource::<MaterialSelectionState>()
         .add_plugins(initial_orbit::InitialOrbitFramingPlugin)
         .add_plugins(DebugGizmoPlugin)
         .add_plugins(LightingPlugin)
@@ -43,6 +47,8 @@ pub fn run() {
         .add_plugins(NprPlugin)
         .add_systems(Startup, setup)
         .add_systems(Update, (orbit_camera, toggle_outline));
+    #[cfg(feature = "dev_ui")]
+    app.add_plugins(scene_picking::ScenePickingPlugin);
 
     #[cfg(feature = "dev_ui")]
     app.init_resource::<DevWindowState>();
@@ -219,6 +225,9 @@ fn orbit_camera(
     mouse_motion: Res<AccumulatedMouseMotion>,
     mouse_scroll: Res<AccumulatedMouseScroll>,
     #[cfg(feature = "dev_ui")] egui_wants_input: Option<Res<EguiWantsInput>>,
+    #[cfg(feature = "dev_ui")] pending_scene_click: Option<
+        Res<scene_picking::PendingPrimitiveClick>,
+    >,
     time: Res<Time>,
     settings: Res<OrbitCameraSettings>,
     scene_scale: Res<OrbitSceneScale>,
@@ -237,7 +246,18 @@ fn orbit_camera(
     }
 
     for (mut transform, mut orbit) in &mut cameras {
-        if mouse_buttons.pressed(MouseButton::Left) {
+        let allow_left_button_orbit = {
+            #[cfg(feature = "dev_ui")]
+            {
+                !scene_picking::left_button_orbit_is_blocked(pending_scene_click.as_deref())
+            }
+            #[cfg(not(feature = "dev_ui"))]
+            {
+                true
+            }
+        };
+
+        if mouse_buttons.pressed(MouseButton::Left) && allow_left_button_orbit {
             let orbit_delta = Vec2::new(-mouse_motion.delta.x, -mouse_motion.delta.y)
                 * settings.orbit_sensitivity;
             orbit.yaw += orbit_delta.x;

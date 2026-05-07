@@ -26,6 +26,9 @@ use crate::npr::{
         ToonParamsData, default_ramp_data, rebuild_ramp_texture,
     },
 };
+use crate::selection::{
+    MaterialPanelEntryRef, MaterialPanelSelectionEntry, MaterialSelectionState,
+};
 
 pub struct MaterialEditorPlugin;
 
@@ -33,7 +36,7 @@ impl Plugin for MaterialEditorPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((EguiPlugin::default(), MaterialPreviewPlugin::default()))
             .register_material_preview::<ToonMaterial>()
-            .init_resource::<SelectedToonMaterial>()
+            .init_resource::<MaterialPropertyPreviewState>()
             .add_systems(
                 Update,
                 (
@@ -58,8 +61,7 @@ impl Plugin for MaterialEditorPlugin {
 }
 
 #[derive(Resource, Default)]
-struct SelectedToonMaterial {
-    icon_entity: Option<Entity>,
+struct MaterialPropertyPreviewState {
     property_preview_entity: Option<Entity>,
 }
 
@@ -277,22 +279,37 @@ fn spawn_material_icon_previews(
                     .cmp(&right.primitive_entity.index())
             })
         });
+        let primitive_entities = source_nodes
+            .iter()
+            .map(|source_node| source_node.primitive_entity)
+            .collect::<Vec<_>>();
 
-        commands.spawn((
-            MaterialPreviewSession {
-                material: material_handle.clone(),
-                size: UVec2::splat(192),
-                ..Default::default()
-            },
-            MaterialHandle(material_handle),
-            RampTextureHandle(material.ramp_texture.clone()),
-            MaterialSourceInfo {
-                source_nodes,
-                scene_asset_path,
-                binding_file_path,
-                shader_key,
-            },
-        ));
+        let preview_entity = commands
+            .spawn((
+                MaterialPreviewSession {
+                    material: material_handle.clone(),
+                    size: UVec2::splat(192),
+                    ..Default::default()
+                },
+                MaterialHandle(material_handle),
+                RampTextureHandle(material.ramp_texture.clone()),
+                MaterialPanelSelectionEntry {
+                    primitive_entities: primitive_entities.clone(),
+                },
+                MaterialSourceInfo {
+                    source_nodes,
+                    scene_asset_path,
+                    binding_file_path,
+                    shader_key,
+                },
+            ))
+            .id();
+
+        for primitive_entity in primitive_entities {
+            commands
+                .entity(primitive_entity)
+                .insert(MaterialPanelEntryRef(preview_entity));
+        }
     }
 }
 
@@ -323,11 +340,12 @@ fn bridge_ramp_texture_to_egui(
 
 fn spawn_property_preview(
     mut commands: Commands,
-    mut selected: ResMut<SelectedToonMaterial>,
+    selection: Res<MaterialSelectionState>,
+    mut preview_state: ResMut<MaterialPropertyPreviewState>,
     material_handles: Query<&MaterialHandle<ToonMaterial>>,
     mut tracker: Local<Option<AssetId<ToonMaterial>>>,
 ) {
-    let Some(selected_entity) = selected.icon_entity else {
+    let Some(selected_entity) = selection.selected_panel_entity else {
         return;
     };
     let Ok(handle) = material_handles.get(selected_entity) else {
@@ -350,16 +368,16 @@ fn spawn_property_preview(
             PropertyPreview,
         ))
         .id();
-    selected.property_preview_entity = Some(entity);
+    preview_state.property_preview_entity = Some(entity);
     *tracker = Some(asset_id);
 }
 
 fn despawn_property_previews(
     mut commands: Commands,
-    selected: Res<SelectedToonMaterial>,
+    preview_state: Res<MaterialPropertyPreviewState>,
     property_previews: Query<Entity, With<PropertyPreview>>,
 ) {
-    let Some(selected_entity) = selected.property_preview_entity else {
+    let Some(selected_entity) = preview_state.property_preview_entity else {
         return;
     };
     for entity in property_previews.iter() {
@@ -371,8 +389,16 @@ fn despawn_property_previews(
 
 fn show_material_library_window(
     mut contexts: EguiContexts,
-    previews: Query<(Entity, &PreviewTextureId, &MaterialSourceInfo), Without<PropertyPreview>>,
-    mut selected: ResMut<SelectedToonMaterial>,
+    previews: Query<
+        (
+            Entity,
+            &PreviewTextureId,
+            &MaterialSourceInfo,
+            &MaterialPanelSelectionEntry,
+        ),
+        Without<PropertyPreview>,
+    >,
+    mut selection: ResMut<MaterialSelectionState>,
     mut window_state: ResMut<DevWindowState>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -397,8 +423,15 @@ fn show_material_library_window(
         }
     });
 
-    if selected.icon_entity.is_none() {
-        selected.icon_entity = entries.first().map(|(entity, _, _)| *entity);
+    let has_valid_selection = selection
+        .selected_panel_entity
+        .is_some_and(|selected_entity| {
+            entries
+                .iter()
+                .any(|(entity, _, _, _)| *entity == selected_entity)
+        });
+    if !has_valid_selection && let Some((entry_entity, _, _, panel_entry)) = entries.first() {
+        selection.select_panel_entry(*entry_entity, panel_entry);
     }
 
     egui::Window::new("当前模型材质")
@@ -417,8 +450,15 @@ fn show_material_library_window(
                 .id_salt("toon_material_library_scroll")
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        for (entity, preview, source_info) in entries {
-                            show_material_entry(ui, &mut selected, entity, preview.0, source_info);
+                        for (entity, preview, source_info, panel_entry) in entries {
+                            show_material_entry(
+                                ui,
+                                &mut selection,
+                                entity,
+                                preview.0,
+                                source_info,
+                                panel_entry,
+                            );
                         }
                     });
                 });
@@ -427,13 +467,14 @@ fn show_material_library_window(
 
 fn show_material_entry(
     ui: &mut egui::Ui,
-    selected: &mut SelectedToonMaterial,
+    selection: &mut MaterialSelectionState,
     entity: Entity,
     preview_texture: egui::TextureId,
     source_info: &MaterialSourceInfo,
+    panel_entry: &MaterialPanelSelectionEntry,
 ) {
     ui.vertical(|ui| {
-        let is_selected = selected.icon_entity == Some(entity);
+        let is_selected = selection.selected_panel_entity == Some(entity);
         #[allow(deprecated)]
         let image_button = egui::ImageButton::new(egui::load::SizedTexture::new(
             preview_texture,
@@ -442,7 +483,7 @@ fn show_material_entry(
         .selected(is_selected);
 
         if ui.add(image_button).clicked() {
-            selected.icon_entity = Some(entity);
+            selection.select_panel_entry(entity, panel_entry);
         }
         let label = match source_info.source_nodes.first() {
             Some(first) if source_info.source_nodes.len() > 1 => {
@@ -464,7 +505,8 @@ fn show_material_entry(
 
 fn show_material_property_window(
     mut contexts: EguiContexts,
-    selected: Res<SelectedToonMaterial>,
+    selection: Res<MaterialSelectionState>,
+    preview_state: Res<MaterialPropertyPreviewState>,
     mut debug_selection: ResMut<DebugSceneSelection>,
     asset_server: Res<AssetServer>,
     material_handles: Query<&MaterialHandle<ToonMaterial>>,
@@ -483,7 +525,7 @@ fn show_material_property_window(
         return;
     };
 
-    let Some(selected_entity) = selected.icon_entity else {
+    let Some(selected_entity) = selection.selected_panel_entity else {
         debug_selection.clear_selected_material();
         egui::Window::new("材质属性")
             .open(&mut window_state.material_property_open)
@@ -547,14 +589,26 @@ fn show_material_property_window(
             });
         return;
     };
-    debug_selection.set_selected_material(
-        selected_entity,
-        source_info
-            .source_nodes
-            .iter()
-            .map(|source_node| source_node.primitive_entity),
-    );
-    let property_preview_texture = selected
+    let selected_primitive_entity = selection
+        .selected_primitive_entity
+        .filter(|primitive_entity| {
+            source_info
+                .source_nodes
+                .iter()
+                .any(|source_node| source_node.primitive_entity == *primitive_entity)
+        })
+        .or_else(|| {
+            source_info
+                .source_nodes
+                .first()
+                .map(|source_node| source_node.primitive_entity)
+        });
+    if let Some(selected_primitive_entity) = selected_primitive_entity {
+        debug_selection.set_selected_material(selected_entity, [selected_primitive_entity]);
+    } else {
+        debug_selection.clear_selected_material();
+    }
+    let property_preview_texture = preview_state
         .property_preview_entity
         .and_then(|entity| property_previews.get(entity).ok())
         .map(|preview| preview.0);
@@ -574,7 +628,12 @@ fn show_material_property_window(
         ))
         .default_size([380.0, 720.0])
         .show(ctx, |ui| {
-            show_selected_material_preview(ui, property_preview_texture, &source_info);
+            show_selected_material_preview(
+                ui,
+                property_preview_texture,
+                &source_info,
+                selected_primitive_entity,
+            );
             egui::ScrollArea::vertical()
                 .id_salt("toon_material_property_scroll")
                 .show(ui, |ui| {
@@ -616,7 +675,17 @@ fn show_selected_material_preview(
     ui: &mut egui::Ui,
     preview_texture: Option<egui::TextureId>,
     source_info: &MaterialSourceInfo,
+    selected_primitive_entity: Option<Entity>,
 ) {
+    let selected_source = selected_primitive_entity
+        .and_then(|primitive_entity| {
+            source_info
+                .source_nodes
+                .iter()
+                .find(|source_node| source_node.primitive_entity == primitive_entity)
+        })
+        .or_else(|| source_info.source_nodes.first());
+
     ui.vertical_centered(|ui| {
         let display_size = egui::vec2(220.0, 176.0);
         if let Some(preview_texture) = preview_texture {
@@ -630,7 +699,7 @@ fn show_selected_material_preview(
         }
         ui.add_space(10.0);
         ui.heading("当前 primitive 材质");
-        if let Some(first_source) = source_info.source_nodes.first() {
+        if let Some(first_source) = selected_source {
             if source_info.source_nodes.len() > 1 {
                 ui.label(
                     egui::RichText::new(format!(
@@ -646,7 +715,15 @@ fn show_selected_material_preview(
         } else {
             ui.label(egui::RichText::new("未命名 primitive").italics());
         }
-        for source_node in source_info.source_nodes.iter().take(4) {
+        let mut source_nodes = Vec::new();
+        if let Some(selected_source) = selected_source {
+            source_nodes.push(selected_source);
+        }
+        source_nodes.extend(source_info.source_nodes.iter().filter(|source_node| {
+            Some(source_node.primitive_entity)
+                != selected_source.map(|selected_source| selected_source.primitive_entity)
+        }));
+        for source_node in source_nodes.into_iter().take(4) {
             ui.small(format!(
                 "{} ({:?})",
                 source_node.node_name, source_node.primitive_entity
