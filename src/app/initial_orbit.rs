@@ -1,12 +1,16 @@
 use bevy::camera::Projection;
 use bevy::{camera::primitives::Aabb, prelude::*, transform::TransformSystems};
 
-use crate::{app::OrbitCamera, npr::toon::ToonMaterialTarget, utils::world_aabb_for_root};
+use crate::{
+    app::{OrbitCamera, OrbitSceneScale},
+    npr::toon::ToonMaterialTarget,
+    utils::world_aabb_for_root,
+};
 
 const TARGET_HEIGHT_RATIO: f32 = 0.68;
 const DISTANCE_PADDING: f32 = 1.15;
-const MIN_INITIAL_DISTANCE: f32 = 2.0;
-const MAX_INITIAL_DISTANCE: f32 = 18.0;
+const BASE_MIN_INITIAL_DISTANCE: f32 = 2.0;
+const BASE_MAX_INITIAL_DISTANCE: f32 = 150.0;
 
 #[derive(Resource, Default)]
 struct InitialOrbitFramingState {
@@ -29,6 +33,7 @@ fn frame_initial_orbit(
     roots: Query<Entity, With<ToonMaterialTarget>>,
     children: Query<&Children>,
     mesh_boxes: Query<(&Aabb, &GlobalTransform), With<Mesh3d>>,
+    scene_scale: Res<OrbitSceneScale>,
     mut cameras: Query<(&mut Transform, &mut OrbitCamera, &Projection), With<Camera3d>>,
 ) {
     let Some(root) = roots.iter().next() else {
@@ -58,7 +63,10 @@ fn frame_initial_orbit(
         perspective.fov,
         perspective.aspect_ratio,
     )
-    .clamp(MIN_INITIAL_DISTANCE, MAX_INITIAL_DISTANCE);
+    .clamp(
+        BASE_MIN_INITIAL_DISTANCE * scene_scale.0.max(0.01),
+        BASE_MAX_INITIAL_DISTANCE * scene_scale.0.max(0.01),
+    );
 
     orbit.target = target;
     orbit.distance = distance;
@@ -93,7 +101,7 @@ fn estimate_orbit_distance(
 ) -> f32 {
     let tan_vertical = (vertical_fov * 0.5).tan();
     if !tan_vertical.is_finite() || tan_vertical <= 0.0 {
-        return MIN_INITIAL_DISTANCE;
+        return BASE_MIN_INITIAL_DISTANCE;
     }
 
     let tan_horizontal = tan_vertical * aspect_ratio.max(0.01);
@@ -113,7 +121,7 @@ fn estimate_orbit_distance(
         required_distance = required_distance.max(vertical / tan_vertical - depth);
     }
 
-    (required_distance.max(0.0_f32) * DISTANCE_PADDING).max(MIN_INITIAL_DISTANCE)
+    (required_distance.max(0.0_f32) * DISTANCE_PADDING).max(BASE_MIN_INITIAL_DISTANCE)
 }
 
 fn aabb_corners(aabb: &Aabb) -> [Vec3; 8] {

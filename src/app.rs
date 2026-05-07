@@ -22,6 +22,8 @@ use crate::ui::DevWindowState;
 const PRIVATE_SCENE_ENV: &str = "BEVY_TA_CHARACTER_SCENE";
 const PRIVATE_SCENE_SCALE_ENV: &str = "BEVY_TA_CHARACTER_SCALE";
 const DEFAULT_PRIVATE_SCENE_SCALE: f32 = 5.0;
+const BASE_MIN_DISTANCE: f32 = 2.0;
+const BASE_MAX_DISTANCE: f32 = 150.0;
 
 pub fn run() {
     let mut app = App::new();
@@ -81,6 +83,7 @@ fn setup(
 
     if let Ok(scene_path) = env::var(PRIVATE_SCENE_ENV) {
         let scene_scale = private_scene_scale();
+        commands.insert_resource(OrbitSceneScale(scene_scale));
         commands.spawn((
             SceneRoot(asset_server.load::<Scene>(scene_path.clone())),
             Transform::from_scale(Vec3::splat(scene_scale)),
@@ -88,6 +91,7 @@ fn setup(
             ToonModelBindingAssetPath(scene_path),
         ));
     } else {
+        commands.insert_resource(OrbitSceneScale(1.0));
         spawn_placeholder_character(&mut commands, &mut meshes, &mut toon_materials, &mut images);
     }
 
@@ -194,6 +198,9 @@ struct OrbitCameraSettings {
     pan_damping: f32,
 }
 
+#[derive(Resource, Clone, Copy)]
+struct OrbitSceneScale(f32);
+
 impl Default for OrbitCameraSettings {
     fn default() -> Self {
         Self {
@@ -214,11 +221,12 @@ fn orbit_camera(
     #[cfg(feature = "dev_ui")] egui_wants_input: Option<Res<EguiWantsInput>>,
     time: Res<Time>,
     settings: Res<OrbitCameraSettings>,
+    scene_scale: Res<OrbitSceneScale>,
     mut cameras: Query<(&mut Transform, &mut OrbitCamera), With<Camera>>,
 ) {
-    const MIN_DISTANCE: f32 = 2.0;
-    const MAX_DISTANCE: f32 = 18.0;
     const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.05;
+    let min_distance = BASE_MIN_DISTANCE * scene_scale.0.max(0.01);
+    let max_distance = BASE_MAX_DISTANCE * scene_scale.0.max(0.01);
 
     #[cfg(feature = "dev_ui")]
     if egui_wants_input
@@ -264,7 +272,7 @@ fn orbit_camera(
         orbit.yaw += orbit.orbit_velocity.x * dt;
         orbit.pitch = (orbit.pitch + orbit.orbit_velocity.y * dt).clamp(-PITCH_LIMIT, PITCH_LIMIT);
         orbit.distance =
-            (orbit.distance + orbit.zoom_velocity * dt).clamp(MIN_DISTANCE, MAX_DISTANCE);
+            (orbit.distance + orbit.zoom_velocity * dt).clamp(min_distance, max_distance);
 
         if orbit.pan_velocity != Vec2::ZERO {
             let pan_velocity = orbit.pan_velocity;
