@@ -7,6 +7,8 @@ use bevy_egui::{EguiContexts, egui};
 use egui::Ui;
 
 use crate::debug_gizmos::DebugGizmoSettings;
+#[cfg(feature = "dev_ui")]
+use crate::ui::DevWindowState;
 
 const DEFAULT_LIGHT_CENTER: Vec3 = Vec3::new(0.0, 1.1, 0.0);
 const DEFAULT_LIGHT_RADIUS: f32 = 2.5;
@@ -193,13 +195,21 @@ fn show_light_control_panel(
     mut contexts: EguiContexts,
     mut settings: ResMut<OrbitingLightSettings>,
     mut gizmo_state: ResMut<OrbitingLightGizmoState>,
+    mut window_state: ResMut<DevWindowState>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
 
+    gizmo_state.active_circle = None;
     egui::Window::new("光源控制")
+        .open(&mut window_state.light_control_open)
         .resizable(true)
+        .default_pos(crate::ui::clamp_window_pos(
+            ctx,
+            egui::pos2(16.0, 56.0),
+            egui::vec2(320.0, 280.0),
+        ))
         .default_size([320.0, 280.0])
         .show(ctx, |ui| {
             ui.horizontal(|ui| {

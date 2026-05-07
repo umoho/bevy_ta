@@ -46,11 +46,12 @@ impl Plugin for MaterialEditorPlugin {
             .add_systems(
                 EguiPrimaryContextPass,
                 (
+                    show_dev_top_bar,
                     bridge_preview_to_egui::<ToonMaterial>,
                     bridge_ramp_texture_to_egui,
                     spawn_property_preview,
                     despawn_property_previews,
-                    (show_material_library_panel, show_material_property_panel).chain(),
+                    (show_material_library_window, show_material_property_window).chain(),
                 ),
             );
     }
@@ -60,6 +61,25 @@ impl Plugin for MaterialEditorPlugin {
 struct SelectedToonMaterial {
     icon_entity: Option<Entity>,
     property_preview_entity: Option<Entity>,
+}
+
+#[derive(Resource, Debug, Clone)]
+pub(crate) struct DevWindowState {
+    pub light_control_open: bool,
+    pub gizmos_open: bool,
+    pub material_library_open: bool,
+    pub material_property_open: bool,
+}
+
+impl Default for DevWindowState {
+    fn default() -> Self {
+        Self {
+            light_control_open: true,
+            gizmos_open: true,
+            material_library_open: true,
+            material_property_open: true,
+        }
+    }
 }
 
 #[derive(Component, Clone)]
@@ -116,6 +136,53 @@ fn setup_chinese_fonts(mut contexts: EguiContexts) {
     if let Err(err) = egui_chinese_font::setup_chinese_fonts(ctx) {
         warn!("不能设置中文字体: {err:?}");
     }
+}
+
+fn show_dev_top_bar(mut contexts: EguiContexts, mut windows: ResMut<DevWindowState>) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
+    egui::TopBottomPanel::top("dev_top_bar").show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            show_window_menu(ui, ctx, &mut windows);
+        });
+    });
+}
+
+fn show_window_menu(ui: &mut egui::Ui, ctx: &egui::Context, windows: &mut DevWindowState) {
+    let popup_id = ui.make_persistent_id("window_menu_popup");
+    let is_open = egui::Popup::is_id_open(ctx, popup_id);
+    let response = ui.add(
+        egui::Button::new("窗口")
+            .frame(false)
+            .selected(is_open)
+            .min_size(egui::vec2(0.0, 24.0)),
+    );
+
+    let _ = egui::Popup::menu(&response).id(popup_id).show(|ui| {
+        ui.checkbox(&mut windows.light_control_open, "光源控制");
+        ui.checkbox(&mut windows.gizmos_open, "Gizmos");
+        ui.checkbox(&mut windows.material_library_open, "当前模型材质");
+        ui.checkbox(&mut windows.material_property_open, "材质属性");
+    });
+}
+
+pub(crate) fn clamp_window_pos(
+    ctx: &egui::Context,
+    desired_pos: egui::Pos2,
+    size: egui::Vec2,
+) -> egui::Pos2 {
+    let rect = ctx.available_rect();
+    let margin = 8.0;
+    let min_x = rect.left() + margin;
+    let min_y = rect.top() + margin;
+    let max_x = (rect.right() - size.x - margin).max(min_x);
+    let max_y = (rect.bottom() - size.y - margin).max(min_y);
+    egui::pos2(
+        desired_pos.x.clamp(min_x, max_x),
+        desired_pos.y.clamp(min_y, max_y),
+    )
 }
 
 fn spawn_material_icon_previews(
@@ -302,10 +369,11 @@ fn despawn_property_previews(
     }
 }
 
-fn show_material_library_panel(
+fn show_material_library_window(
     mut contexts: EguiContexts,
     previews: Query<(Entity, &PreviewTextureId, &MaterialSourceInfo), Without<PropertyPreview>>,
     mut selected: ResMut<SelectedToonMaterial>,
+    mut window_state: ResMut<DevWindowState>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -333,11 +401,18 @@ fn show_material_library_panel(
         selected.icon_entity = entries.first().map(|(entity, _, _)| *entity);
     }
 
-    egui::TopBottomPanel::bottom("toon_material_library_panel")
+    egui::Window::new("当前模型材质")
+        .open(&mut window_state.material_library_open)
         .resizable(true)
-        .default_height(148.0)
+        .default_pos(clamp_window_pos(
+            ctx,
+            egui::pos2(16.0, 760.0),
+            egui::vec2(1120.0, 180.0),
+        ))
+        .default_size([1120.0, 180.0])
         .show(ctx, |ui| {
-            ui.heading("当前模型材质");
+            ui.label(egui::RichText::new("当前模型材质").strong());
+            ui.add_space(6.0);
             egui::ScrollArea::horizontal()
                 .id_salt("toon_material_library_scroll")
                 .show(ui, |ui| {
@@ -387,7 +462,7 @@ fn show_material_entry(
     });
 }
 
-fn show_material_property_panel(
+fn show_material_property_window(
     mut contexts: EguiContexts,
     selected: Res<SelectedToonMaterial>,
     mut debug_selection: ResMut<DebugSceneSelection>,
@@ -402,21 +477,74 @@ fn show_material_property_panel(
     mut surface_profile_editor_state: Local<CharacterSurfaceContainerEditorState>,
     mut ramp_editor_state: Local<RampEditorState>,
     mut persistence_state: Local<MaterialPersistenceState>,
+    mut window_state: ResMut<DevWindowState>,
 ) {
+    let Ok(ctx) = contexts.ctx_mut() else {
+        return;
+    };
+
     let Some(selected_entity) = selected.icon_entity else {
         debug_selection.clear_selected_material();
+        egui::Window::new("材质属性")
+            .open(&mut window_state.material_property_open)
+            .resizable(true)
+            .default_pos(clamp_window_pos(
+                ctx,
+                egui::pos2(1300.0, 76.0),
+                egui::vec2(380.0, 720.0),
+            ))
+            .default_size([380.0, 720.0])
+            .show(ctx, |ui| {
+                ui.label("先从当前模型材质中选择一个材质。");
+            });
         return;
     };
     let Ok(material_handle) = material_handles.get(selected_entity) else {
         debug_selection.clear_selected_material();
+        egui::Window::new("材质属性")
+            .open(&mut window_state.material_property_open)
+            .resizable(true)
+            .default_pos(clamp_window_pos(
+                ctx,
+                egui::pos2(1300.0, 76.0),
+                egui::vec2(380.0, 720.0),
+            ))
+            .default_size([380.0, 720.0])
+            .show(ctx, |ui| {
+                ui.label("选中的材质已经不存在。");
+            });
         return;
     };
     let Ok(mut source_info) = source_infos.get_mut(selected_entity) else {
         debug_selection.clear_selected_material();
+        egui::Window::new("材质属性")
+            .open(&mut window_state.material_property_open)
+            .resizable(true)
+            .default_pos(clamp_window_pos(
+                ctx,
+                egui::pos2(1300.0, 76.0),
+                egui::vec2(380.0, 720.0),
+            ))
+            .default_size([380.0, 720.0])
+            .show(ctx, |ui| {
+                ui.label("当前材质信息不可用。");
+            });
         return;
     };
     let Some(material) = materials.get_mut(material_handle.0.id()) else {
         debug_selection.clear_selected_material();
+        egui::Window::new("材质属性")
+            .open(&mut window_state.material_property_open)
+            .resizable(true)
+            .default_pos(clamp_window_pos(
+                ctx,
+                egui::pos2(1300.0, 76.0),
+                egui::vec2(380.0, 720.0),
+            ))
+            .default_size([380.0, 720.0])
+            .show(ctx, |ui| {
+                ui.label("当前材质资源不可用。");
+            });
         return;
     };
     debug_selection.set_selected_material(
@@ -436,13 +564,15 @@ fn show_material_property_panel(
         material,
         &mut surface_profile_editor_state,
     );
-    let Ok(ctx) = contexts.ctx_mut() else {
-        return;
-    };
-
-    egui::SidePanel::right("toon_material_property_panel")
+    egui::Window::new("材质属性")
+        .open(&mut window_state.material_property_open)
         .resizable(true)
-        .default_width(380.0)
+        .default_pos(clamp_window_pos(
+            ctx,
+            egui::pos2(1300.0, 76.0),
+            egui::vec2(380.0, 720.0),
+        ))
+        .default_size([380.0, 720.0])
         .show(ctx, |ui| {
             show_selected_material_preview(ui, property_preview_texture, &source_info);
             egui::ScrollArea::vertical()

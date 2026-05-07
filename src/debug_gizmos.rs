@@ -10,6 +10,8 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui, input::EguiWantsInpu
 #[cfg(feature = "brp_tools")]
 use crate::mcp::McpDebugCamera;
 use crate::npr::toon::ToonMaterialTarget;
+#[cfg(feature = "dev_ui")]
+use crate::ui::DevWindowState;
 
 const DEBUG_GIZMO_TOGGLE_KEY: KeyCode = KeyCode::KeyG;
 const CHARACTER_AABB_COLOR: Color = Color::srgba(0.35, 0.85, 1.0, 0.95);
@@ -322,13 +324,23 @@ fn draw_debug_camera_up_triangle(
 }
 
 #[cfg(feature = "dev_ui")]
-fn show_debug_gizmo_window(mut contexts: EguiContexts, mut settings: ResMut<DebugGizmoSettings>) {
+fn show_debug_gizmo_window(
+    mut contexts: EguiContexts,
+    mut settings: ResMut<DebugGizmoSettings>,
+    mut window_state: ResMut<DevWindowState>,
+) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
 
-    egui::Window::new("调试 gizmos")
+    egui::Window::new("Gizmos")
+        .open(&mut window_state.gizmos_open)
         .resizable(true)
+        .default_pos(crate::ui::clamp_window_pos(
+            ctx,
+            egui::pos2(16.0, 360.0),
+            egui::vec2(280.0, 250.0),
+        ))
         .default_size([280.0, 250.0])
         .show(ctx, |ui| {
             ui.horizontal(|ui| {

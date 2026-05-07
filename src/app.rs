@@ -14,6 +14,8 @@ use crate::npr::{
     NprPlugin,
     toon::{ToonMaterial, ToonMaterialTarget, ToonModelBindingAssetPath},
 };
+#[cfg(feature = "dev_ui")]
+use crate::ui::DevWindowState;
 
 const PRIVATE_SCENE_ENV: &str = "BEVY_TA_CHARACTER_SCENE";
 const PRIVATE_SCENE_SCALE_ENV: &str = "BEVY_TA_CHARACTER_SCALE";
@@ -38,9 +40,11 @@ pub fn run() {
         .add_systems(Update, (orbit_camera, toggle_outline));
 
     #[cfg(feature = "dev_ui")]
+    app.init_resource::<DevWindowState>();
+    #[cfg(feature = "dev_ui")]
     app.add_plugins((
-        crate::lighting::LightingEditorPlugin,
         crate::ui::MaterialEditorPlugin,
+        crate::lighting::LightingEditorPlugin,
     ));
     #[cfg(feature = "brp_tools")]
     app.add_plugins(crate::mcp::McpDebugPlugin);
