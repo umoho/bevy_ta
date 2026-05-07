@@ -12,6 +12,7 @@ use crate::mcp::McpDebugCamera;
 use crate::npr::toon::ToonMaterialTarget;
 #[cfg(feature = "dev_ui")]
 use crate::ui::DevWindowState;
+use crate::utils::world_aabb_for_root;
 
 const DEBUG_GIZMO_TOGGLE_KEY: KeyCode = KeyCode::KeyG;
 const CHARACTER_AABB_COLOR: Color = Color::srgba(0.35, 0.85, 1.0, 0.95);
@@ -194,15 +195,7 @@ fn draw_character_bounds(
     }
 
     for root in &roots {
-        let mut points = Vec::new();
-        for descendant in children
-            .iter_descendants(root)
-            .filter_map(|entity| mesh_boxes.get(entity).ok())
-        {
-            collect_world_aabb_points(&mut points, descendant.0, descendant.1);
-        }
-
-        let Some(world_aabb) = Aabb::enclosing(points.iter().copied()) else {
+        let Some(world_aabb) = world_aabb_for_root(root, &children, &mesh_boxes) else {
             continue;
         };
 
@@ -365,25 +358,4 @@ fn show_debug_gizmo_window(
             ui.add_space(4.0);
             ui.small("热键 G 只切换全局开关。");
         });
-}
-
-fn collect_world_aabb_points(points: &mut Vec<Vec3>, aabb: &Aabb, transform: &GlobalTransform) {
-    let min = Vec3::from(aabb.min());
-    let max = Vec3::from(aabb.max());
-    let corners = [
-        Vec3::new(min.x, min.y, min.z),
-        Vec3::new(max.x, min.y, min.z),
-        Vec3::new(min.x, max.y, min.z),
-        Vec3::new(max.x, max.y, min.z),
-        Vec3::new(min.x, min.y, max.z),
-        Vec3::new(max.x, min.y, max.z),
-        Vec3::new(min.x, max.y, max.z),
-        Vec3::new(max.x, max.y, max.z),
-    ];
-
-    points.extend(
-        corners
-            .into_iter()
-            .map(|corner| transform.transform_point(corner)),
-    );
 }

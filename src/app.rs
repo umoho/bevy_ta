@@ -8,6 +8,8 @@ use bevy::{
 #[cfg(feature = "dev_ui")]
 use bevy_egui::input::EguiWantsInput;
 
+mod initial_orbit;
+
 use crate::debug_gizmos::DebugGizmoPlugin;
 use crate::lighting::LightingPlugin;
 use crate::npr::{
@@ -24,6 +26,7 @@ const DEFAULT_PRIVATE_SCENE_SCALE: f32 = 5.0;
 pub fn run() {
     let mut app = App::new();
     app.init_resource::<OrbitCameraSettings>()
+        .add_plugins(initial_orbit::InitialOrbitFramingPlugin)
         .add_plugins(DebugGizmoPlugin)
         .add_plugins(LightingPlugin)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
