@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+#[cfg(feature = "brp_tools")]
 use bevy::camera::Projection;
 use bevy::pbr::wireframe::{Wireframe, WireframeColor};
 use bevy::{camera::primitives::Aabb, prelude::*, transform::TransformSystems};
@@ -13,7 +14,9 @@ use crate::npr::toon::ToonMaterialTarget;
 const DEBUG_GIZMO_TOGGLE_KEY: KeyCode = KeyCode::KeyG;
 const CHARACTER_AABB_COLOR: Color = Color::srgba(0.35, 0.85, 1.0, 0.95);
 const SELECTED_PRIMITIVE_COLOR: Color = Color::srgba(1.0, 0.78, 0.22, 0.95);
+#[cfg(feature = "brp_tools")]
 const DEBUG_CAMERA_COLOR: Color = Color::srgba(0.95, 0.45, 0.35, 0.95);
+#[cfg(feature = "brp_tools")]
 const DEBUG_CAMERA_ICON_SCALE: f32 = 0.14;
 
 #[derive(Resource, Debug, Clone)]
