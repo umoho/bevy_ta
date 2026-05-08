@@ -54,9 +54,10 @@ impl Plugin for MaterialEditorPlugin {
                     bridge_ramp_texture_to_egui,
                     spawn_property_preview,
                     despawn_property_previews,
-                    (show_material_library_window, show_material_property_window).chain(),
                 ),
             );
+        app.add_systems(EguiPrimaryContextPass, show_material_library_window);
+        app.add_systems(EguiPrimaryContextPass, show_material_property_window);
     }
 }
 
@@ -65,12 +66,20 @@ struct MaterialPropertyPreviewState {
     property_preview_entity: Option<Entity>,
 }
 
+const MATERIAL_LIBRARY_DEFAULT_SIZE: [f32; 2] = [1120.0, 180.0];
+const MATERIAL_LIBRARY_MIN_WIDTH: f32 = 360.0;
+const MATERIAL_LIBRARY_MIN_HEIGHT: f32 = 180.0;
+const MATERIAL_LIBRARY_CARD_WIDTH: f32 = 112.0;
+const MATERIAL_LIBRARY_CARD_IMAGE_SIZE: f32 = 84.0;
+const MATERIAL_LIBRARY_GRID_SPACING: f32 = 12.0;
+
 #[derive(Resource, Debug, Clone)]
 pub(crate) struct DevWindowState {
     pub light_control_open: bool,
     pub gizmos_open: bool,
     pub material_library_open: bool,
     pub material_property_open: bool,
+    material_property_was_open: bool,
 }
 
 impl Default for DevWindowState {
@@ -80,6 +89,7 @@ impl Default for DevWindowState {
             gizmos_open: true,
             material_library_open: true,
             material_property_open: true,
+            material_property_was_open: false,
         }
     }
 }
@@ -423,68 +433,90 @@ fn show_material_library_window(
         }
     });
 
-    let has_valid_selection = selection
-        .selected_panel_entity
-        .is_some_and(|selected_entity| {
-            entries
-                .iter()
-                .any(|(entity, _, _, _)| *entity == selected_entity)
-        });
-    if !has_valid_selection && let Some((entry_entity, _, _, panel_entry)) = entries.first() {
-        selection.select_panel_entry(*entry_entity, panel_entry);
-    }
-
+    let mut open_material_property_window = false;
     egui::Window::new("当前模型材质")
         .open(&mut window_state.material_library_open)
         .resizable(true)
+        .min_size(egui::vec2(
+            MATERIAL_LIBRARY_MIN_WIDTH,
+            MATERIAL_LIBRARY_MIN_HEIGHT,
+        ))
         .default_pos(clamp_window_pos(
             ctx,
             egui::pos2(16.0, 760.0),
-            egui::vec2(1120.0, 180.0),
+            egui::vec2(
+                MATERIAL_LIBRARY_DEFAULT_SIZE[0],
+                MATERIAL_LIBRARY_DEFAULT_SIZE[1],
+            ),
         ))
-        .default_size([1120.0, 180.0])
+        .default_size(MATERIAL_LIBRARY_DEFAULT_SIZE)
         .show(ctx, |ui| {
-            ui.label(egui::RichText::new("当前模型材质").strong());
-            ui.add_space(6.0);
-            egui::ScrollArea::horizontal()
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
                 .id_salt("toon_material_library_scroll")
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for (entity, preview, source_info, panel_entry) in entries {
-                            show_material_entry(
-                                ui,
-                                &mut selection,
-                                entity,
-                                preview.0,
-                                source_info,
-                                panel_entry,
-                            );
-                        }
-                    });
+                    if entries.is_empty() {
+                        ui.label("当前没有可用的材质。");
+                        return;
+                    }
+
+                    let columns = material_library_column_count(ui.available_width());
+                    egui::Grid::new("toon_material_library_grid")
+                        .spacing(egui::vec2(
+                            MATERIAL_LIBRARY_GRID_SPACING,
+                            MATERIAL_LIBRARY_GRID_SPACING,
+                        ))
+                        .show(ui, |ui| {
+                            for (index, (entity, preview, source_info, panel_entry)) in
+                                entries.into_iter().enumerate()
+                            {
+                                show_material_entry(
+                                    ui,
+                                    &mut selection,
+                                    &mut open_material_property_window,
+                                    entity,
+                                    preview.0,
+                                    source_info,
+                                    panel_entry,
+                                );
+                                if (index + 1) % columns == 0 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
                 });
         });
+    if open_material_property_window {
+        window_state.material_property_open = true;
+    }
 }
 
 fn show_material_entry(
     ui: &mut egui::Ui,
     selection: &mut MaterialSelectionState,
+    open_material_property_window: &mut bool,
     entity: Entity,
     preview_texture: egui::TextureId,
     source_info: &MaterialSourceInfo,
     panel_entry: &MaterialPanelSelectionEntry,
 ) {
-    ui.vertical(|ui| {
+    ui.vertical_centered(|ui| {
+        ui.set_min_width(MATERIAL_LIBRARY_CARD_WIDTH);
+
         let is_selected = selection.selected_panel_entity == Some(entity);
         #[allow(deprecated)]
         let image_button = egui::ImageButton::new(egui::load::SizedTexture::new(
             preview_texture,
-            egui::Vec2::splat(84.0),
+            egui::Vec2::splat(MATERIAL_LIBRARY_CARD_IMAGE_SIZE),
         ))
         .selected(is_selected);
 
         if ui.add(image_button).clicked() {
             selection.select_panel_entry(entity, panel_entry);
+            *open_material_property_window = true;
         }
+
+        ui.add_space(4.0);
         let label = match source_info.source_nodes.first() {
             Some(first) if source_info.source_nodes.len() > 1 => {
                 format!(
@@ -497,15 +529,48 @@ fn show_material_entry(
             None => "未命名节点".to_string(),
         };
         ui.add_sized(
-            egui::vec2(96.0, 0.0),
-            egui::Label::new(egui::RichText::new(label).small()),
+            egui::vec2(MATERIAL_LIBRARY_CARD_WIDTH, 0.0),
+            egui::Label::new(egui::RichText::new(label).small()).wrap(),
         );
     });
 }
 
+fn material_library_column_count(available_width: f32) -> usize {
+    let card_width = MATERIAL_LIBRARY_CARD_WIDTH + MATERIAL_LIBRARY_GRID_SPACING;
+    let available = available_width.max(MATERIAL_LIBRARY_CARD_WIDTH);
+    (((available + MATERIAL_LIBRARY_GRID_SPACING) / card_width).floor() as usize).max(1)
+}
+
+fn clear_primitive_selection_on_property_window_close(
+    was_open: bool,
+    window_state: &DevWindowState,
+    selection: &mut MaterialSelectionState,
+    debug_selection: &mut DebugSceneSelection,
+) {
+    if was_open && !window_state.material_property_open {
+        selection.selected_panel_entity = None;
+        selection.clear_selected_primitive();
+        debug_selection.clear_selected_material_primitives();
+    }
+}
+
+fn sync_material_property_window_state(
+    window_state: &mut DevWindowState,
+    selection: &mut MaterialSelectionState,
+    debug_selection: &mut DebugSceneSelection,
+) {
+    clear_primitive_selection_on_property_window_close(
+        window_state.material_property_was_open,
+        window_state,
+        selection,
+        debug_selection,
+    );
+    window_state.material_property_was_open = window_state.material_property_open;
+}
+
 fn show_material_property_window(
     mut contexts: EguiContexts,
-    selection: Res<MaterialSelectionState>,
+    mut selection: ResMut<MaterialSelectionState>,
     preview_state: Res<MaterialPropertyPreviewState>,
     mut debug_selection: ResMut<DebugSceneSelection>,
     asset_server: Res<AssetServer>,
@@ -525,6 +590,10 @@ fn show_material_property_window(
         return;
     };
 
+    sync_material_property_window_state(&mut window_state, &mut selection, &mut debug_selection);
+    if !window_state.material_property_open {
+        return;
+    }
     let Some(selected_entity) = selection.selected_panel_entity else {
         debug_selection.clear_selected_material();
         egui::Window::new("材质属性")
@@ -539,6 +608,11 @@ fn show_material_property_window(
             .show(ctx, |ui| {
                 ui.label("先从当前模型材质中选择一个材质。");
             });
+        sync_material_property_window_state(
+            &mut window_state,
+            &mut selection,
+            &mut debug_selection,
+        );
         return;
     };
     let Ok(material_handle) = material_handles.get(selected_entity) else {
@@ -555,6 +629,11 @@ fn show_material_property_window(
             .show(ctx, |ui| {
                 ui.label("选中的材质已经不存在。");
             });
+        sync_material_property_window_state(
+            &mut window_state,
+            &mut selection,
+            &mut debug_selection,
+        );
         return;
     };
     let Ok(mut source_info) = source_infos.get_mut(selected_entity) else {
@@ -571,6 +650,11 @@ fn show_material_property_window(
             .show(ctx, |ui| {
                 ui.label("当前材质信息不可用。");
             });
+        sync_material_property_window_state(
+            &mut window_state,
+            &mut selection,
+            &mut debug_selection,
+        );
         return;
     };
     let Some(material) = materials.get_mut(material_handle.0.id()) else {
@@ -587,6 +671,11 @@ fn show_material_property_window(
             .show(ctx, |ui| {
                 ui.label("当前材质资源不可用。");
             });
+        sync_material_property_window_state(
+            &mut window_state,
+            &mut selection,
+            &mut debug_selection,
+        );
         return;
     };
     let selected_primitive_entity = selection
@@ -668,6 +757,7 @@ fn show_material_property_window(
                     );
                 });
         });
+    sync_material_property_window_state(&mut window_state, &mut selection, &mut debug_selection);
     source_info.shader_key = surface_profile_editor_state.shader_key.clone();
 }
 

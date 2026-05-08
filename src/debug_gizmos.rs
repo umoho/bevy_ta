@@ -57,6 +57,10 @@ impl DebugSceneSelection {
         self.selected_material_primitives.clear();
     }
 
+    pub fn clear_selected_material_primitives(&mut self) {
+        self.selected_material_primitives.clear();
+    }
+
     pub fn set_selected_material(
         &mut self,
         selected_material_entity: Entity,

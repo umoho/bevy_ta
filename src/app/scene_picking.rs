@@ -5,6 +5,8 @@ use bevy_egui::input::EguiWantsInput;
 use bevy_picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
 
 use crate::selection::{MaterialPanelEntryRef, MaterialSelectionState};
+#[cfg(feature = "dev_ui")]
+use crate::ui::DevWindowState;
 
 use super::OrbitCamera;
 
@@ -53,6 +55,7 @@ pub(crate) fn left_button_orbit_is_blocked(state: Option<&PendingPrimitiveClick>
 fn handle_scene_selection_input(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     #[cfg(feature = "dev_ui")] egui_wants_input: Option<Res<EguiWantsInput>>,
+    #[cfg(feature = "dev_ui")] mut window_state: ResMut<DevWindowState>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
     primitive_refs: Query<&MaterialPanelEntryRef>,
@@ -123,6 +126,10 @@ fn handle_scene_selection_input(
 
         if primitive_entity == expected_primitive {
             selection.select_primitive(panel_entity, primitive_entity);
+            #[cfg(feature = "dev_ui")]
+            {
+                window_state.material_property_open = true;
+            }
         }
     }
 }

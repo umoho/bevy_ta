@@ -25,6 +25,10 @@ impl MaterialSelectionState {
         self.selected_panel_entity = Some(panel_entity);
         self.selected_primitive_entity = Some(primitive_entity);
     }
+
+    pub fn clear_selected_primitive(&mut self) {
+        self.selected_primitive_entity = None;
+    }
 }
 
 #[derive(Component, Debug, Clone)]
