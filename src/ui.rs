@@ -85,10 +85,10 @@ pub(crate) struct DevWindowState {
 impl Default for DevWindowState {
     fn default() -> Self {
         Self {
-            light_control_open: true,
+            light_control_open: false,
             gizmos_open: true,
-            material_library_open: true,
-            material_property_open: true,
+            material_library_open: false,
+            material_property_open: false,
             material_property_was_open: false,
         }
     }

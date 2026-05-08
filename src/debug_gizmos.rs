@@ -35,12 +35,12 @@ pub struct DebugGizmoSettings {
 impl Default for DebugGizmoSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             show_character_bounds: true,
             show_character_bounds_axes: false,
             show_selected_primitives: true,
             show_debug_cameras: true,
-            show_orbiting_light: true,
+            show_orbiting_light: false,
         }
     }
 }
